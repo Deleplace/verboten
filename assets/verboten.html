@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<!-- Generated using Gemini Canvas at https://gemini.google.com/ -->
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Verboten Game</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Poppins', sans-serif;
+        }
+        .perspective-container {
+            perspective: 1000px;
+        }
+        .card {
+            transform-style: preserve-3d;
+            transition: transform 0.6s;
+        }
+        .card.flipped {
+            transform: rotateY(180deg);
+        }
+        .card-face {
+            backface-visibility: hidden;
+            -webkit-backface-visibility: hidden;
+        }
+        .card-back {
+            transform: rotateY(180deg);
+        }
+
+        @keyframes grow {
+            0% {
+                transform: scale(0.5);
+                opacity: 0;
+            }
+            100% {
+                transform: scale(1);
+                opacity: 1;
+            }
+        }
+        .animate-grow {
+            animation: grow 0.5s cubic-bezier(0.250, 0.460, 0.450, 0.940) both;
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                transform: scale(1);
+            }
+            50% {
+                transform: scale(1.05);
+            }
+        }
+        .mic-active {
+            animation: pulse 1.5s infinite;
+            box-shadow: 0 0 0 0 rgba(239, 68, 68, 1);
+            animation: pulse-red 2s infinite;
+        }
+        @keyframes pulse-red {
+            0% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+            }
+            70% {
+                transform: scale(1);
+                box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
+            }
+            100% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+            }
+        }
+
+        #referee-img {
+            z-index: 5;  /* above the game box */
+        }
+        #contestant2-img {
+            z-index: -1;  /* below the game box */
+        }
+        .red-cross {
+            width: 20px;
+            height: 4px;
+            background-color: red;
+            position: relative;
+            transform: rotate(45deg);
+            margin: 10px;
+        }
+
+        .red-cross::after {
+            content: "";
+            position: absolute;
+            width: 20px;
+            height: 4px;
+            background-color: red;
+            transform: rotate(90deg);
+        }
+    </style>
+
+
+    <script>
+
+        var audioDebug;
+
+            var inputDiv;
+            var ws;
+            var isRecording = false;
+            var audioChunksReceived = [];
+            var audioChunksSent = [];
+            var processor; // Audio processor.
+            var inputTimer; // Timer for input button.
+            var humanSpeech = '';
+            var modelSpeech = '';
+
+            var sampleRate = 24000;
+
+            const audio = new Audio();
+            var audioQueue = [];
+            var isAudioPlaying = false;
+
+            function encodeAudio(audioChunks, sampleRate, bitDepth, numChannels) {
+                var audioData = mergeUint8Array(audioChunks);
+
+                const dataSize = audioData.length;
+                const fileSize = dataSize + 36;
+                const blockAlign = numChannels * bitDepth / 8;
+                const byteRate = sampleRate * blockAlign;
+
+                const buffer = new ArrayBuffer(44);
+                const view = new DataView(buffer);
+
+                function writeString(offset, string) {
+                    for (let i = 0; i < string.length; i++) {
+                        view.setUint8(offset + i, string.charCodeAt(i));
+                    }
+                }
+
+                writeString(0, 'RIFF');
+                view.setUint32(4, fileSize, true);
+                writeString(8, 'WAVE');
+                writeString(12, 'fmt ');
+                view.setUint32(16, 16, true);
+                view.setUint16(20, 1, true);
+                view.setUint16(22, numChannels, true);
+                view.setUint32(24, sampleRate, true);
+                view.setUint32(28, byteRate, true);
+                view.setUint16(32, blockAlign, true);
+                view.setUint16(34, bitDepth, true);
+                writeString(36, 'data');
+                view.setUint32(40, dataSize, true);
+
+                let mergedData = mergeUint8Array([new Uint8Array(buffer), audioData]);
+
+                return new Blob([mergedData.buffer], { type: 'audio/wav' });
+            }
+
+            function createContent(msg) {
+                data = { 'clientContent': { 'turnComplete': true, 'turns': [{ 'parts': [{ 'text': msg }] }] } };
+                return JSON.stringify(data);
+            }
+
+            function createImageContent(msg) {
+                data = { 'media': { 'data': msg,  'mimeType': 'image/jpeg'  } };
+                return JSON.stringify(data);
+            }
+
+            function createAudioContent(msg) {
+                data = { 'media': { 'data': msg,  'mimeType': 'audio/pcm'  } };
+                return JSON.stringify(data);
+            }
+
+            function mergeUint8Array(arrays) {
+                const totalSize = arrays.reduce((acc, e) => acc + e.length, 0);
+                const merged = new Uint8Array(totalSize);
+
+                arrays.forEach((array, i, arrays) => {
+                    const offset = arrays.slice(0, i).reduce((acc, e) => acc + e.length, 0);
+                    merged.set(array, offset);
+                });
+
+                return merged;
+            }
+
+            function b64ToUint8Array(b64Data, contentType = '', sliceSize = 512) {
+                const byteCharacters = atob(b64Data);
+                const byteArrays = [];
+
+                for (let offset = 0; offset < byteCharacters.length; offset += sliceSize) {
+                    const slice = byteCharacters.slice(offset, offset + sliceSize);
+
+                    const byteNumbers = new Array(slice.length);
+                    for (let i = 0; i < slice.length; i++) {
+                        byteNumbers[i] = slice.charCodeAt(i);
+                    }
+                    const byteArray = new Uint8Array(byteNumbers);
+                    byteArrays.push(byteArray);
+                }
+
+                var res = mergeUint8Array(byteArrays);
+                return res;
+            }
+
+            function openWs(lang) {
+                if (ws) {
+                    return false;
+                }
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const forbiddenParams = allForbiddenWords.map(word => `forbidden=${encodeURIComponent(word)}`).join('&');
+                ws = new WebSocket(`${protocol}//${window.location.host}/live/${lang}?${forbiddenParams}`);
+                ws.onopen = function (evt) {
+                    console.debug('OPEN');
+                }
+                ws.onclose = function (evt) {
+                    console.debug('CLOSE');
+                    ws = null;
+                }
+                ws.onmessage = function (evt) {
+                    data = JSON.parse(evt.data);
+                    if (!data.serverContent) return;
+
+                    if (data.serverContent.inputTranscription && data.serverContent.inputTranscription.text) {
+                        humanSpeech += data.serverContent.inputTranscription.text + " ";
+                        console.log('Human says: ', humanSpeech);
+
+                        for (const forbiddenWord of allForbiddenWords) {
+                            if (humanSpeech.toLowerCase().includes(forbiddenWord.toLowerCase())) {
+                                endGame(false, phrases[currentLanguage].youSaidForbidden(forbiddenWord));
+                                return;
+                            }
+                        }
+                    }
+                    const lastModelText = data?.serverContent?.outputTranscription?.text;
+                    if (data.serverContent.outputTranscription && lastModelText) {
+                        console.log('Model says: ', lastModelText);
+                        modelSpeech += lastModelText;
+                        if (modelSpeech.toLowerCase().includes(targetWord.word.toLowerCase())) {
+                            // Give 1200ms for the contestant to actually pronounce the word, then
+                            // proclaim victory.
+                            setTimeout(() => {
+                                endGame(true, phrases[currentLanguage].modelGuessedWord(targetWord.word));
+                            }, 1200);
+                            return;
+                        } else {
+                            // Missed :(
+                            console.log(`Model missed, "${lastModelText}" is not the word.`);
+                        }
+                    }
+
+                    if (data.serverContent.turnComplete) {
+                        if (audioChunksSent.length > 0) {
+                            //console.log(audioChunksSent.length);
+                            audioChunksSent = [];
+                        }
+                        audioChunksReceived = []
+                        return;
+                    }
+                    if (!data.serverContent.modelTurn || !data.serverContent.modelTurn.parts || !data.serverContent.modelTurn.parts[0]) return;
+                    if (data.serverContent.modelTurn.parts[0].inlineData) {
+                        inlineData = data.serverContent.modelTurn.parts[0].inlineData;
+                        // console.debug('RECEIVED: ' + typeof (inlineData) + inlineData.mimeType + inlineData.data)
+                        if (inlineData.mimeType.startsWith('audio/pcm')) {
+                            const audioData = b64ToUint8Array(inlineData.data);
+                            audioQueue.push(audioData);
+                            audioChunksReceived.push(audioData);
+                            playNextChunk();
+                        }
+                        return;
+                    }
+                }
+                ws.onerror = function (evt) {
+                    console.error('ERROR: ' + evt.data);
+                }
+                return false;
+            };
+
+            function recordStop() {
+                if (processor) {
+                    processor.disconnect(); // Disconnect processor
+                }
+                isRecording = false;
+            }
+
+            function recordStart() {
+                recordAudio();
+                isRecording = true;
+            }
+
+            function recordAudio() {
+                console.debug('recordAudio()');
+                navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+                    const audioContext = new AudioContext({ sampleRate: sampleRate }); // Explicitly set sample rate.
+                    const source = audioContext.createMediaStreamSource(stream);
+                    processor = audioContext.createScriptProcessor(1024, 1, 1); // bufferSize, numInputChannels, numOutputChannels
+
+                    processor.onaudioprocess = (e) => {
+                        const inputData = e.inputBuffer.getChannelData(0); // Raw PCM data
+                        const pcmData16 = convertFloat32ToInt16(inputData);
+
+                        // Process or send pcmData16 via WebSocket
+                        if (ws && ws.readyState === WebSocket.OPEN && preludeFinished) {
+                            // console.debug('audioChunksSent.push()');
+                            audioChunksSent.push(new Uint8Array(pcmData16.buffer))
+                            const base64Data = arrayBufferToBase64(pcmData16.buffer);
+                            ws.send(createAudioContent(base64Data));
+                        }
+                    };
+
+                    source.connect(processor);
+                    processor.connect(audioContext.destination); // Connect to output to hear audio during recording
+                });
+            }
+
+
+            function arrayBufferToBase64(buffer) {
+                let binary = '';
+                const bytes = new Uint8Array(buffer);
+                const len = bytes.byteLength;
+                for (let i = 0; i < len; i++) {
+                    binary += String.fromCharCode(bytes[i]);
+                }
+                return btoa(binary);
+            }
+
+            function convertFloat32ToInt16(float32Array) {
+                const int16Array = new Int16Array(float32Array.length);
+                for (let i = 0; i < float32Array.length; i++) {
+                    int16Array[i] = Math.max(-32768, Math.min(32767, float32Array[i] * 32768)); // Scale and clamp
+                }
+                return int16Array;
+            }
+
+            function playNextChunk() {
+                if (!isAudioPlaying && audioQueue.length > 0) {
+                    isAudioPlaying = true;
+                    const encodedAudio = encodeAudio(audioQueue, 24000, 16, 1);
+                    audioQueue = [];
+                    audio.src = URL.createObjectURL(encodedAudio);
+                    audio.onended = function () {
+                        isAudioPlaying = false;
+                        playNextChunk();
+                    }
+                    contestantSpeaking();
+                    audio.play();
+                }
+            }
+
+            function refereeSpeaking(waving) {
+                const refereeImg = document.getElementById('referee-img');
+                let originalSrc = '/forbiddenwords/referee.png';
+                let speakingSrc = '/forbiddenwords/referee_openmouth.png';
+                if(waving) {
+                    originalSrc = '/forbiddenwords/referee_waves.png';
+                    speakingSrc = '/forbiddenwords/referee_waves_openmouth.png';
+                }
+
+                if (!refereeImg) return null;
+
+                const interval = 120;
+                let isSpeaking = true;
+                refereeImg.src = speakingSrc;
+
+                const animationInterval = setInterval(() => {
+                    isSpeaking = !isSpeaking;
+                    refereeImg.src = isSpeaking ? speakingSrc : originalSrc;
+                }, interval);
+
+                return animationInterval;
+            }
+
+            function contestantSpeaking() {
+                const contestantImg = document.getElementById('contestant2-img');
+                const originalSrc = '/forbiddenwords/contestant2.png';
+                const speakingSrc = '/forbiddenwords/contestant2_openmouth.png';
+
+                if (!contestantImg) return null;
+
+                setTimeout(() => {
+                    // Open mouth
+                contestantImg.src = speakingSrc;
+                }, 100);
+
+                setTimeout(() => {
+                    // Close mouth
+                    contestantImg.src = originalSrc;
+                }, 300);
+            }
+
+    </script>
+
+</head>
+<body class="bg-slate-900 text-white flex items-center justify-center min-h-screen p-4">
+    <img id="referee-img" src="/forbiddenwords/referee.png" class="hidden absolute left-8 top-1/2 -translate-y-1/2 h-96">
+    <div id="contestant-container" class="hidden absolute right-8 top-1/2 -translate-y-1/2 h-96">
+        <img id="contestant2-img" src="/forbiddenwords/contestant2.png" class="h-full">
+        <div id="misses-container" class="absolute top-1/2 right-full flex flex-col space-y-2">
+            <!-- Red crosses will be added here -->
+        </div>
+    </div>
+    <div class="w-full max-w-2xl mx-auto text-center">
+        
+        <header class="mb-8">
+            <h1 id="main-title" class="text-4xl md:text-5xl font-bold text-cyan-400"></h1>
+            <p id="main-subtitle" class="text-slate-400 mt-2"></p>
+        </header>
+
+        <main id="game-container" class="bg-slate-800 rounded-2xl shadow-2xl p-6 md:p-8 relative">
+            
+            <!-- Initial State / Game Over State -->
+            <div id="start-screen">
+                <h2 id="game-message" class="text-3xl font-bold mb-4 text-white"></h2>
+                <p id="message-subtitle" class="text-slate-300 mb-6"></p>
+                <div id="language-buttons" class="flex justify-center space-x-4">
+                    <button id="start-en-button" class="bg-cyan-500 hover:bg-cyan-600 text-white font-bold py-3 px-8 rounded-lg text-xl shadow-lg transition-transform transform hover:scale-105">
+                        English
+                    </button>
+                    <button id="start-fr-button" class="bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-8 rounded-lg text-xl shadow-lg transition-transform transform hover:scale-105">
+                        Français
+                    </button>
+                    <button id="start-ar-button" class="bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-8 rounded-lg text-xl shadow-lg transition-transform transform hover:scale-105">
+                        العربية
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Active Game State -->
+            <div id="game-screen" class="hidden">
+                <!-- Main Word Display -->
+                <div id="main-word-container" class="mb-6 h-64 flex items-center justify-center">
+                    <!-- This will be populated by JS -->
+                </div>
+                
+                <!-- Timer and Mic Status -->
+                <div class="flex items-center justify-center space-x-4 mb-6">
+                    <div id="timer" class="text-5xl font-bold text-cyan-400">30</div>
+                    <div id="mic-status" class="w-12 h-12 bg-slate-700 rounded-full flex items-center justify-center transition-colors">
+                        <svg class="w-6 h-6 text-slate-400" fill="currentColor" viewBox="0 0 20 20">
+                            <path d="M7 4a3 3 0 016 0v6a3 3 0 11-6 0V4zM3 8a1 1 0 011-1h1a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V8zM13 8a1 1 0 011-1h1a1 1 0 011 1v2a1 1 0 01-1 1h-1a1 1 0 01-1-1V8z"></path>
+                        </svg>
+                    </div>
+                </div>
+
+                <!-- Forbidden Words List -->
+                <div>
+                    <h3 id="dont-say-these-words" class="text-xl font-semibold mb-3 text-slate-300"></h3>
+                    <div id="forbidden-words-list" class="flex flex-wrap justify-center gap-2">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+            </div>
+        </main>
+        
+        <footer class="mt-8 text-slate-500">
+            <p id="microphone-usage"></p>
+        </footer>
+
+    </div>
+
+    <script>
+        let currentLanguage = 'en'; // Default language
+
+        const phrases = {
+            en: {
+                gameTitle: "Forbidden Word Game",
+                title: "Forbidden Word",
+                subtitle: "Describe the main word without saying any of the forbidden words!",
+                readyToPlay: "Ready to Play?",
+                clickToStart: "Click a button to start the game.",
+                describeWord: (word) => `Describe the word: ${word}`,
+                forbiddenWordsAre: "The forbidden words are",
+                youSurvived: "You survived! Well done!",
+                youWin: "You Win! 🎉",
+                gameOver: "Game Over! 😥",
+                playAgain: "Play Again",
+                micRequired: "Microphone access is required to play. Please allow it and try again.",
+                youSaidForbidden: (word) => `You said the forbidden word: "${word}"`,
+                modelGuessedWord: (word) => `The model guessed the word: "${word}"`,
+                goodJob: "Good job!",
+                microphoneUsage: "This game uses your microphone.",
+                dontSayTheseWords: "Don't say these words:"
+            },
+            fr: {
+                gameTitle: "Mots Prohibés",
+                title: "Mots Prohibés",
+                subtitle: "Décrivez le mot secret sans prononcer aucun des mots prohibés !",
+                readyToPlay: "Prêt à jouer ?",
+                clickToStart: "Cliquez sur un bouton pour commencer le jeu.",
+                describeWord: (word) => `Décrivez le mot : ${word}`,
+                forbiddenWordsAre: "Les mots prohibés sont",
+                youSurvived: "Vous avez survécu ! Bien joué ! ",
+                youWin: "Vous avez gagné ! 🎉",
+                gameOver: "Partie terminée ! 😥",
+                playAgain: "Rejouer",
+                micRequired: "L'accès au microphone est requis pour jouer. Veuillez l'autoriser et réessayer.",
+                youSaidForbidden: (word) => `Vous avez dit le mot prohibé: "${word}"`,
+                modelGuessedWord: (word) => `Le modèle a deviné le mot: "${word}"`,
+                goodJob: "Bravo !",
+                microphoneUsage: "Ce jeu utilise votre microphone.",
+                dontSayTheseWords: "Ne dites pas ces mots :"
+            },
+            ar: {
+                gameTitle: "لعبة الكلمات الممنوعة",
+                title: "الكلمة الممنوعة",
+                subtitle: "صف الكلمة الرئيسية دون أن تقول أي من الكلمات الممنوعة!",
+                readyToPlay: "هل أنت مستعد للعب؟",
+                clickToStart: "انقر على زر لبدء اللعبة.",
+                describeWord: (word) => `صف الكلمة: ${word}`,
+                forbiddenWordsAre: "الكلمات الممنوعة هي",
+                youSurvived: "لقد نجوت! أحسنت!",
+                youWin: "لقد فزت! 🎉",
+                gameOver: "انتهت اللعبة! 😥",
+                playAgain: "العب مرة أخرى",
+                micRequired: "مطلوب الوصول إلى الميكروفون للعب. يرجى السماح به والمحاولة مرة أخرى.",
+                youSaidForbidden: (word) => `لقد قلت الكلمة الممنوعة: "${word}"`,
+                modelGuessedWord: (word) => `لقد خمن النموذج الكلمة: "${word}"`,
+                goodJob: "عمل جيد!",
+                microphoneUsage: "هذه اللعبة تستخدم الميكروفون الخاص بك.",
+                dontSayTheseWords: "لا تقل هذه الكلمات:"
+            },
+            es: {
+                readyToPlay: "¿Listo para jugar?",
+                clickToStart: "Haz clic en un botón para iniciar el juego.",
+                describeWord: (word) => `Describe la palabra: ${word}`,
+                forbiddenWordsAre: "Las palabras prohibidas son",
+                youSurvived: "¡Sobreviviste! ¡Bien hecho!",
+                youWin: "¡Ganaste! 🎉",
+                gameOver: "¡Juego terminado! 😥",
+                playAgain: "Jugar de nuevo",
+                micRequired: "Se requiere acceso al micrófono para jugar. Por favor, permítelo e inténtalo de nuevo."
+            },
+            de: {
+                readyToPlay: "Bereit zu spielen?",
+                clickToStart: "Klicken Sie auf eine Schaltfläche, um das Spiel zu starten.",
+                describeWord: (word) => `Beschreiben Sie das Wort: ${word}`,
+                forbiddenWordsAre: "Die verbotenen Wörter sind",
+                youSurvived: "Du hast überlebt! Gut gemacht!",
+                youWin: "Du hast gewonnen! 🎉",
+                gameOver: "Spiel vorbei! 😥",
+                playAgain: "Nochmal spielen",
+                micRequired: "Mikrofonzugriff ist zum Spielen erforderlich. Bitte erlauben Sie ihn und versuchen Sie es erneut."
+            }
+        };
+
+        const startScreen = document.getElementById('start-screen');
+        const gameScreen = document.getElementById('game-screen');
+        const gameMessage = document.getElementById('game-message');
+        const messageSubtitle = document.getElementById('message-subtitle');
+        const mainWordContainer = document.getElementById('main-word-container');
+        const forbiddenWordsList = document.getElementById('forbidden-words-list');
+        const timerDisplay = document.getElementById('timer');
+        const micStatus = document.getElementById('mic-status');
+        const refereeImg = document.getElementById('referee-img');
+
+        function updateUIText(language) {
+            document.documentElement.lang = language;
+            document.title = phrases[language].gameTitle;
+            document.getElementById('main-title').textContent = phrases[language].title;
+            document.getElementById('main-subtitle').textContent = phrases[language].subtitle;
+            gameMessage.textContent = phrases[language].readyToPlay;
+            messageSubtitle.textContent = phrases[language].clickToStart;
+            document.getElementById('microphone-usage').textContent = phrases[language].microphoneUsage;
+            document.getElementById('dont-say-these-words').textContent = phrases[language].dontSayTheseWords;
+        }
+
+        // Set initial text based on default language
+        updateUIText(currentLanguage);
+
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        let recognition;
+
+        let wordData = {};
+        fetch('words.json')
+            .then(response => response.json())
+            .then(data => wordData = data)
+            .catch(error => console.error('Error loading word data:', error));
+
+        let targetWord = {};
+        let allForbiddenWords = [];
+        let timer;
+        let timeLeft;
+        let preludeFinished = false;
+
+        let availableVoices = [];
+        let voices = {}; // Use an object to store voices per language
+
+        function loadVoices() {
+            availableVoices = window.speechSynthesis.getVoices();
+
+            voices.en = availableVoices.find(v =>
+                v.lang.startsWith('en') &&
+                (v.name.toLowerCase().includes('male') ||
+                 v.name.toLowerCase().includes('david') ||
+                 v.name.toLowerCase().includes('daniel') ||
+                 v.name.toLowerCase().includes('fred'))
+            );
+            if (!voices.en) {
+                voices.en = availableVoices.find(v => v.lang.startsWith('en') && v.name.toLowerCase().includes('male'));
+            }
+            if (!voices.en) {
+                voices.en = availableVoices.find(v => v.lang.startsWith('en'));
+            }
+
+
+            voices.fr = availableVoices.find(v =>
+                v.lang.startsWith('fr') &&
+                (v.name.toLowerCase().includes('male') ||
+                 v.name.toLowerCase().includes('thomas') ||
+                 v.name.toLowerCase().includes('amethyste'))
+            );
+            if (!voices.fr) {
+                voices.fr = availableVoices.find(v => v.lang.startsWith('fr') && v.name.toLowerCase().includes('male'));
+            }
+            if (!voices.fr) {
+                voices.fr = availableVoices.find(v => v.lang.startsWith('fr'));
+            }
+
+            voices.ar = availableVoices.find(v =>
+                v.lang.startsWith('ar') &&
+                (v.name.toLowerCase().includes('male'))
+            );
+            if (!voices.ar) {
+                voices.ar = availableVoices.find(v => v.lang.startsWith('ar'));
+            }
+        }
+        loadVoices();
+        if (window.speechSynthesis.onvoiceschanged !== undefined) {
+            window.speechSynthesis.onvoiceschanged = loadVoices;
+        }
+
+        function refereeSpeak(text, waving, callback) {
+            console.log(text);
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.lang = currentLanguage === 'fr' ? 'fr-FR' : (currentLanguage === 'ar' ? 'ar-SA' : 'en-US');
+            utterance.rate = 1.2;
+
+            const voice = voices[currentLanguage];
+            if (voice) {
+                utterance.voice = voice;
+            } else {
+                utterance.pitch = 0.3;
+            }
+            
+            const animationInterval = refereeSpeaking(waving);
+
+            utterance.onend = () => {
+                if (animationInterval) {
+                    clearInterval(animationInterval);
+                    const refereeImg = document.getElementById('referee-img');
+                    if (refereeImg) {
+                        refereeImg.src = '/forbiddenwords/referee.png';
+                    }
+                }
+                if (callback) {
+                    callback();
+                }
+            };
+
+            speechSynthesis.speak(utterance);
+        }
+
+
+        
+
+        function startGame(language) {
+            updateUIText(language);
+            currentLanguage = language;
+            humanSpeech = '';
+            modelSpeech = '';
+            preludeFinished = false;
+            startScreen.classList.add('hidden');
+            mainWordContainer.innerHTML = '';
+            forbiddenWordsList.innerHTML = '';
+            gameScreen.classList.remove('hidden');
+            refereeImg.classList.remove('hidden');
+            document.getElementById('contestant-container').classList.remove('hidden');
+
+            const gameData = { ...wordData[language][Math.floor(Math.random() * wordData[language].length)] };
+            targetWord = { word: gameData.word };
+            allForbiddenWords = [gameData.word, ...gameData.forbidden];
+
+            // Display main word
+            const imageUrl = `https://placehold.co/400x200/1E293B/94A3B8?text=${targetWord.word}`;
+            mainWordContainer.innerHTML = `
+                <div class="animate-grow w-full">
+                    <img src="${imageUrl}" alt="${targetWord.word}" class="rounded-lg shadow-lg mx-auto mb-4 w-64 h-32 object-cover">
+                    <h2 class="text-4xl font-bold">${targetWord.word}</h2>
+                </div>
+            `;
+
+            recordStart();
+            refereeSpeak(phrases[language].describeWord(targetWord.word), false, () => {
+                refereeSpeak(phrases[language].forbiddenWordsAre, false, () => {
+                    // After saying the main word, show the other forbidden words
+                    gameData.forbidden.forEach((word, index) => {
+                        setTimeout(() => {
+                            const wordEl = document.createElement('div');
+                            wordEl.className = 'bg-slate-700 text-red-400 font-semibold py-2 px-4 rounded-lg animate-grow';
+                            wordEl.textContent = word;
+                            forbiddenWordsList.appendChild(wordEl);
+                            
+                            let callback = null;
+                            if (index === gameData.forbidden.length - 1) {
+                                // This is the last forbidden word.
+                                callback = () => {
+                                    const contestantImg = document.getElementById('contestant2-img');
+                                    if (contestantImg) {
+                                        contestantImg.classList.remove('hidden');
+                                    }
+                                    preludeFinished = true;
+                                };
+                            }
+                            refereeSpeak(word, false, callback);
+                        }, index * 800);
+                    });
+
+                    openWs(language);
+                    setTimeout(() => {
+                        // Start Gemini listening to the human player
+                        // recordStart();
+                    });
+                });
+            });
+        }
+
+        function startTimerAndRecognition() {
+            timeLeft = 30;
+            timerDisplay.textContent = timeLeft;
+            if (recognition) {
+                 try {
+                    recognition.start();
+                 } catch(e) {
+                    console.error("Recognition could not be started: ", e);
+                 }
+            }
+
+            timer = setInterval(() => {
+                timeLeft--;
+                timerDisplay.textContent = timeLeft;
+                if (timeLeft <= 0) {
+                    endGame(true, phrases[currentLanguage].youSurvived);
+                }
+            }, 1000);
+        }
+
+        function endGame(isWin, message) {
+            if (ws) {
+                ws.close();
+            }
+            console.log(message);
+            clearInterval(timer);
+            if (recognition) {
+                recognition.stop();
+            }
+
+            gameScreen.classList.add('hidden');
+            startScreen.classList.remove('hidden');
+
+            gameMessage.textContent = isWin ? phrases[currentLanguage].youWin : phrases[currentLanguage].gameOver;
+            messageSubtitle.textContent = message;
+            
+            // Referee raises his hand
+            const refereeImg = document.getElementById('referee-img');
+            if (refereeImg) {
+                refereeImg.src = '/forbiddenwords/referee_waves_openmouth.png';
+            }
+
+            if (isWin) {
+                // Won
+                refereeSpeak(phrases[currentLanguage].goodJob, true);
+            } else {
+                // Lost
+                refereeSpeak(message, true);
+            }
+
+            const languageButtons = document.getElementById('language-buttons');
+            languageButtons.innerHTML = ''; // Clear language buttons
+
+            const playAgainButton = document.createElement('button');
+            playAgainButton.id = 'play-again-button';
+            playAgainButton.className = 'bg-cyan-500 hover:bg-cyan-600 text-white font-bold py-3 px-8 rounded-lg text-xl shadow-lg transition-transform transform hover:scale-105';
+            playAgainButton.textContent = phrases[currentLanguage].playAgain;
+            //playAgainButton.onclick = () => handleStartGameClick(currentLanguage);
+            playAgainButton.onclick = () => location.reload(); // make sure WS gets connected anew
+            languageButtons.appendChild(playAgainButton);
+        }
+
+        // --- Event Listeners ---
+        function handleStartGameClick(language) {
+            // Check for microphone permissions first
+            navigator.mediaDevices.getUserMedia({ audio: true })
+                .then(stream => {
+                    // Permissions granted, we can close the stream immediately
+                    stream.getTracks().forEach(track => track.stop());
+                    startGame(language);
+                })
+                .catch(err => {
+                    console.error('Microphone access denied:', err);
+                    endGame(false, "Microphone access is required to play. Please allow it and try again.");
+                });
+        }
+
+        document.getElementById('start-en-button').addEventListener('click', () => handleStartGameClick('en'));
+        document.getElementById('start-fr-button').addEventListener('click', () => handleStartGameClick('fr'));
+        document.getElementById('start-ar-button').addEventListener('click', () => handleStartGameClick('ar'));
+
+    </script>
+</body>
+</html>
