@@ -16,7 +16,7 @@ COPY . .
 # Build the Go application.
 # The -o flag specifies the output file name.
 # CGO_ENABLED=0 is used to build a statically linked binary.
-RUN CGO_ENABLED=0 go build -o /server .
+RUN CGO_ENABLED=0 go build -o /server ./cmd/web
 
 # Use a minimal, secure base image for the final production image.
 FROM gcr.io/distroless/base-debian11
@@ -28,8 +28,7 @@ WORKDIR /app
 COPY --from=builder /server .
 
 # Copy the testdata directory which contains the images for the game.
-COPY --from=builder /app/testdata ./testdata
+COPY --from=builder /app/assets ./assets
 
 # Set the command to run the application.
-# The application will be started with the -n=8 flag to run sample 8.
-CMD ["/app/server", "-n=8"]
+CMD ["/app/server"]
