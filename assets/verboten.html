@@ -438,7 +438,7 @@
                     </div>
                 </div>
 
-                <!-- Forbidden Words List -->
+                <!-- Proscribed Words List -->
                 <div>
                     <h3 id="dont-say-these-words" class="text-xl font-semibold mb-3 text-slate-300"></h3>
                     <div id="forbidden-words-list" class="flex flex-wrap justify-center gap-2">
@@ -459,19 +459,19 @@
 
         const phrases = {
             en: {
-                gameTitle: "Forbidden Word Game",
-                title: "Forbidden Word",
-                subtitle: "Describe the main word without saying any of the forbidden words!",
+                gameTitle: "Proscribed Words Game",
+                title: "Verboten",
+                subtitle: "Describe the main word without saying any of the proscribed words!",
                 readyToPlay: "Ready to Play?",
                 clickToStart: "Click a button to start the game.",
                 describeWord: (word) => `Describe the word: ${word}`,
-                forbiddenWordsAre: "The forbidden words are",
+                forbiddenWordsAre: "The proscribed words are",
                 youSurvived: "You survived! Well done!",
                 youWin: "You Win! 🎉",
                 gameOver: "Game Over! 😥",
                 playAgain: "Play Again",
                 micRequired: "Microphone access is required to play. Please allow it and try again.",
-                youSaidForbidden: (word) => `You said the forbidden word: "${word}"`,
+                youSaidForbidden: (word) => `You said the proscribed word: "${word}"`,
                 modelGuessedWord: (word) => `The model guessed the word: "${word}"`,
                 goodJob: "Good job!",
                 microphoneUsage: "This game uses your microphone.",
@@ -479,7 +479,7 @@
             },
             fr: {
                 gameTitle: "Mots Prohibés",
-                title: "Mots Prohibés",
+                title: "Verboten",
                 subtitle: "Décrivez le mot secret sans prononcer aucun des mots prohibés !",
                 readyToPlay: "Prêt à jouer ?",
                 clickToStart: "Cliquez sur un bouton pour commencer le jeu.",
@@ -688,7 +688,7 @@
             recordStart();
             refereeSpeak(phrases[language].describeWord(targetWord.word), false, () => {
                 refereeSpeak(phrases[language].forbiddenWordsAre, false, () => {
-                    // After saying the main word, show the other forbidden words
+                    // After saying the main word, show the other proscribed words
                     gameData.forbidden.forEach((word, index) => {
                         setTimeout(() => {
                             const wordEl = document.createElement('div');
@@ -698,7 +698,7 @@
                             
                             let callback = null;
                             if (index === gameData.forbidden.length - 1) {
-                                // This is the last forbidden word.
+                                // This is the last proscribed word.
                                 callback = () => {
                                     const contestantImg = document.getElementById('contestant2-img');
                                     if (contestantImg) {

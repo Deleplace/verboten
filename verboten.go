@@ -115,7 +115,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 
 	gameID := randomString(4)
 	forbiddenWords := r.URL.Query()["forbidden"]
-	log.Printf("Starting game %s in %s with forbidden words %q", gameID, lang, forbiddenWords)
+	log.Printf("Starting game %s in %s with proscribed words %q", gameID, lang, forbiddenWords)
 
 	ctx := context.Background()
 

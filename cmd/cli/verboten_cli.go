@@ -214,7 +214,7 @@ func main() {
 
 		g := new(errgroup.Group)
 
-		// Check for forbidden words
+		// Check for proscribed words
 		var lost bool
 		var forbiddenSaid, forbiddenMatched string
 		g.Go(func() error {
@@ -284,37 +284,37 @@ func normalize(s string) string {
 
 func (fw *forbiddenWord) saidForbidden(ctx context.Context, said string) (lost bool, forbiddenSaid string, forbiddenMatched string, err error) {
 	systemInstruction := `
-		You are the judge in the Forbidden Words game.
+		You are the judge in the Proscribed Words game.
 		The human player will say a description.
 
-		If the prompt contains any of the forbidden words, or an inflection of a forbidden
-		word, or a forbidden word translated in another language, then the game is lost.
+		If the prompt contains any of the proscribed words, or an inflection of a forbidden
+		word, or a proscribed word translated in another language, then the game is lost.
 
-		The forbidden words are:
+		The proscribed words are:
 		` + fw.Word + ", " + strings.Join(fw.Forbidden, ", ") + `
 
-		In the field "forbiddenWord", provide exactly one of the original forbidden words.
+		In the field "forbiddenWord", provide exactly one of the original proscribed words.
 
 		In the field "fragment", provide the part of the prompt that violated the rule.
 
-		The description must be rejected as using a forbidden word only if it actually contains
-		an inflection, or misspelling, or translation of a forbidden word.
+		The description must be rejected as using a proscribed word only if it actually contains
+		an inflection, or misspelling, or translation of a proscribed word.
 
-		Synonyms of forbidden words must not trigger a lost game.
+		Synonyms of proscribed words must not trigger a lost game.
 
-		E.g. "ficelle" does not match the forbidden word "Corde", because the two words have
+		E.g. "ficelle" does not match the proscribed word "Corde", because the two words have
 		a similar meaning but the word "ficelle" is not an inflection of the word "corde" and
 		the game is not lost.
 
-		E.g. "orange" does not match the forbidden word "Agrume", because the two words have
+		E.g. "orange" does not match the proscribed word "Agrume", because the two words have
 		a similar meaning but the word "orange" is not an inflection of the word "Agrume" and
 		the game is not lost.
 
-		E.g. "tronc" does not match the forbidden word "Arbre", because the two words have
+		E.g. "tronc" does not match the proscribed word "Arbre", because the two words have
 		related meaning but the word "tronc" is not an inflection of the word "Arbre" and
 		the game is not lost.
 
-		E.g. "poussent" matches the forbidden word "Pousser", because "poussent" is a
+		E.g. "poussent" matches the proscribed word "Pousser", because "poussent" is a
 		conjugation of the verb "Pousser", thus it is an inflection of "Pousser" and the game
 		is lost.
 `
@@ -373,12 +373,12 @@ func (fw *forbiddenWord) saidForbidden(ctx context.Context, said string) (lost b
 		return false, "", "", nil
 	}
 
-	// Sometimes words are incorrectly detected as forbidden, just because they are
-	// semantically close to one of the forbidden words.
+	// Sometimes words are incorrectly detected as proscribed, just because they are
+	// semantically close to one of the proscribed words.
 	// E.g. " 'nuages' est trop proche du mot prohibé 'Ciel' "
 	//
 	// Let's double-check if the suspicious fragment is actually either an inflection,
-	// or a translation, of the forbidden word.
+	// or a translation, of the proscribed word.
 	var isSameRoot, isTranslated bool
 
 	g := new(errgroup.Group)
@@ -406,7 +406,7 @@ func (fw *forbiddenWord) saidForbidden(ctx context.Context, said string) (lost b
 	}
 
 	if isTranslated {
-		fmt.Printf("\nJudge says: '%s' is a translation of the forbidden word '%s'\n", result.Fragment, result.ForbiddenWord)
+		fmt.Printf("\nJudge says: '%s' is a translation of the proscribed word '%s'\n", result.Fragment, result.ForbiddenWord)
 	}
 
 	return result.Lost, result.Fragment, result.ForbiddenWord, nil
