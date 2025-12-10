@@ -27,7 +27,6 @@ type forbiddenWord struct {
 type wordsByLang struct {
 	En []forbiddenWord `json:"en"`
 	Fr []forbiddenWord `json:"fr"`
-	Ar []forbiddenWord `json:"ar"`
 }
 
 type uiPhrases struct {
@@ -44,18 +43,18 @@ type uiPhrases struct {
 
 var phrases = map[string]uiPhrases{
 	"en": {
-		chooseLanguage:          "Choose your language (en/fr/ar): ",
+		chooseLanguage:          "Choose your language (en/fr): ",
 		wordToDescribe:          "The word to describe is: %s\n",
 		forbiddenWordsAre:       "The proscribed words are: %s\n",
 		describeTheWord:         "\nDescribe the word.\n> ",
 		usedForbiddenWord:       "Oh! You used the proscribed word '%s'. You lose!\n",
-		usedForbiddenInflection: "Oh! You sais '%s' which is too close to the proscribed word '%s'. You lose!\n",
+		usedForbiddenInflection: "Oh! You said '%s' which is too close to the proscribed word '%s'. You lose!\n",
 		aiGuess:                 "AI: %s\n",
 		aiGuessedTheWord:        "\nThe AI guessed the word! You win!\n",
 		wordWas:                 "\nThe word was %s. You lose!\n",
 	},
 	"fr": {
-		chooseLanguage:          "Choisissez votre langue (en/fr/ar): ",
+		chooseLanguage:          "Choisissez votre langue (en/fr): ",
 		wordToDescribe:          "Le mot à décrire est : %s\n",
 		forbiddenWordsAre:       "Les mots prohibés sont : %s\n",
 		describeTheWord:         "\nDécrivez le mot.\n> ",
@@ -64,17 +63,6 @@ var phrases = map[string]uiPhrases{
 		aiGuess:                 "IA : %s\n",
 		aiGuessedTheWord:        "\nL'IA a deviné le mot ! Vous avez gagné !\n",
 		wordWas:                 "\nLe mot était %s. Vous avez perdu !\n",
-	},
-	"ar": {
-		chooseLanguage:          "اختر لغتك (en/fr/ar): ",
-		wordToDescribe:          "الكلمة التي يجب وصفها هي: %s\n",
-		forbiddenWordsAre:       "الكلمات الممنوعة هي: %s\n",
-		describeTheWord:         "\nصف الكلمة.\n> ",
-		usedForbiddenWord:       "أوه! لقد استخدمت الكلمة الممنوعة '%s'. لقد خسرت!\n",
-		usedForbiddenInflection: "أوه! لقد قلت '%s' وهي قريبة جدًا من الكلمة الممنوعة '%s'. لقد خسرت!\n",
-		aiGuess:                 "الذكاء الاصطناعي: %s\n",
-		aiGuessedTheWord:        "\nلقد خمن الذكاء الاصطناعي الكلمة! لقد فزت!\n",
-		wordWas:                 "\nكانت الكلمة %s. لقد خسرت!\n",
 	},
 }
 
@@ -165,21 +153,7 @@ func main() {
 				Let's start.
 				`
 			langName = "English"
-		case "ar":
-			langChosen = true
-			words = allWords.Ar
-			currentPhrases = phrases["ar"]
-			instructions = `
-				أنت المخمن في لعبة "الكلمات الممنوعة".
-				سأصف لك كلمة. عليك أن تخمن ما هي.
-				لديك 3 محاولات فقط.
-				أعرف الكلمة التي يجب تخمينها، لكن لا يمكنني قولها لك.
-				كما لا يمكنني قول العديد من الكلمات الممنوعة الأخرى.
-				أجب باللغة العربية فقط.
-				أجب فقط بالكلمة التي تعتقد أنها الكلمة التي أحاول أن أجعلك تخمنها.
-				لنبدأ.
-				`
-			langName = "Arabic"
+
 		}
 	}
 	//fmt.Println(instructions)

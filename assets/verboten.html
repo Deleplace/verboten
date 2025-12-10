@@ -415,9 +415,6 @@
                     <button id="start-fr-button" class="bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-8 rounded-lg text-xl shadow-lg transition-transform transform hover:scale-105">
                         Français
                     </button>
-                    <button id="start-ar-button" class="bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-8 rounded-lg text-xl shadow-lg transition-transform transform hover:scale-105">
-                        العربية
-                    </button>
                 </div>
             </div>
             
@@ -496,25 +493,7 @@
                 microphoneUsage: "Ce jeu utilise votre microphone.",
                 dontSayTheseWords: "Ne dites pas ces mots :"
             },
-            ar: {
-                gameTitle: "لعبة الكلمات الممنوعة",
-                title: "الكلمة الممنوعة",
-                subtitle: "صف الكلمة الرئيسية دون أن تقول أي من الكلمات الممنوعة!",
-                readyToPlay: "هل أنت مستعد للعب؟",
-                clickToStart: "انقر على زر لبدء اللعبة.",
-                describeWord: (word) => `صف الكلمة: ${word}`,
-                forbiddenWordsAre: "الكلمات الممنوعة هي",
-                youSurvived: "لقد نجوت! أحسنت!",
-                youWin: "لقد فزت! 🎉",
-                gameOver: "انتهت اللعبة! 😥",
-                playAgain: "العب مرة أخرى",
-                micRequired: "مطلوب الوصول إلى الميكروفون للعب. يرجى السماح به والمحاولة مرة أخرى.",
-                youSaidForbidden: (word) => `لقد قلت الكلمة الممنوعة: "${word}"`,
-                modelGuessedWord: (word) => `لقد خمن النموذج الكلمة: "${word}"`,
-                goodJob: "عمل جيد!",
-                microphoneUsage: "هذه اللعبة تستخدم الميكروفون الخاص بك.",
-                dontSayTheseWords: "لا تقل هذه الكلمات:"
-            },
+
             es: {
                 readyToPlay: "¿Listo para jugar?",
                 clickToStart: "Haz clic en un botón para iniciar el juego.",
@@ -612,13 +591,7 @@
                 voices.fr = availableVoices.find(v => v.lang.startsWith('fr'));
             }
 
-            voices.ar = availableVoices.find(v =>
-                v.lang.startsWith('ar') &&
-                (v.name.toLowerCase().includes('male'))
-            );
-            if (!voices.ar) {
-                voices.ar = availableVoices.find(v => v.lang.startsWith('ar'));
-            }
+
         }
         loadVoices();
         if (window.speechSynthesis.onvoiceschanged !== undefined) {
@@ -628,7 +601,7 @@
         function refereeSpeak(text, waving, callback) {
             console.log(text);
             const utterance = new SpeechSynthesisUtterance(text);
-            utterance.lang = currentLanguage === 'fr' ? 'fr-FR' : (currentLanguage === 'ar' ? 'ar-SA' : 'en-US');
+            utterance.lang = currentLanguage === 'fr' ? 'fr-FR' : 'en-US';
             utterance.rate = 1.2;
 
             const voice = voices[currentLanguage];
@@ -799,7 +772,7 @@
 
         document.getElementById('start-en-button').addEventListener('click', () => handleStartGameClick('en'));
         document.getElementById('start-fr-button').addEventListener('click', () => handleStartGameClick('fr'));
-        document.getElementById('start-ar-button').addEventListener('click', () => handleStartGameClick('ar'));
+
 
     </script>
 </body>
