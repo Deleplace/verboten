@@ -646,14 +646,14 @@
             document.getElementById('contestant-container').classList.remove('hidden');
 
             const gameData = { ...wordData[language][Math.floor(Math.random() * wordData[language].length)] };
-            targetWord = { word: gameData.word };
+            targetWord = { word: gameData.word, id: gameData.id };
             allForbiddenWords = [gameData.word, ...gameData.forbidden];
 
             // Display main word
-            const imageUrl = `https://placehold.co/400x200/1E293B/94A3B8?text=${targetWord.word}`;
+            const imageUrl = `/forbiddenwords/words_img/${targetWord.id}.png`;
             mainWordContainer.innerHTML = `
                 <div class="animate-grow w-full">
-                    <img src="${imageUrl}" alt="${targetWord.word}" class="rounded-lg shadow-lg mx-auto mb-4 w-64 h-32 object-cover">
+                    <img src="${imageUrl}" alt="${targetWord.word}" class="rounded-lg shadow-lg mx-auto mb-4 w-64 h-32 object-contain">
                     <h2 class="text-4xl font-bold">${targetWord.word}</h2>
                 </div>
             `;
