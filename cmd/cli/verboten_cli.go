@@ -192,6 +192,7 @@ func main() {
 		var lost bool
 		var forbiddenSaid, forbiddenMatched string
 		g.Go(func() error {
+			var err error
 			lost, forbiddenSaid, forbiddenMatched, err = gameWord.saidForbidden(ctx, description)
 			return err
 		})
@@ -199,6 +200,7 @@ func main() {
 		// Let Gemini guess, concurrently
 		var result *genai.GenerateContentResponse
 		g.Go(func() error {
+			var err error
 			result, err = chat.SendMessage(ctx, genai.Part{Text: description})
 			return err
 		})
@@ -347,6 +349,14 @@ func (fw *forbiddenWord) saidForbidden(ctx context.Context, said string) (lost b
 		return false, "", "", nil
 	}
 
+	if !containsCaseInsensitive(said, result.Fragment) {
+		log.Fatalf("Model flagged fragment %q which was actually not in the user input %q", result.Fragment, said)
+	}
+
+	if normalize(result.Fragment) == normalize(result.ForbiddenWord) {
+		return true, result.Fragment, result.ForbiddenWord, nil
+	}
+
 	// Sometimes words are incorrectly detected as proscribed, just because they are
 	// semantically close to one of the proscribed words.
 	// E.g. " 'nuages' est trop proche du mot prohibé 'Ciel' "
@@ -377,13 +387,14 @@ func (fw *forbiddenWord) saidForbidden(ctx context.Context, said string) (lost b
 
 	if isSameRoot {
 		fmt.Printf("\nJudge says: the words '%s' and '%s' have the same root\n", result.Fragment, result.ForbiddenWord)
+		return true, result.Fragment, result.ForbiddenWord, nil
 	}
 
 	if isTranslated {
 		fmt.Printf("\nJudge says: '%s' is a translation of the proscribed word '%s'\n", result.Fragment, result.ForbiddenWord)
+		return true, result.Fragment, result.ForbiddenWord, nil
 	}
-
-	return result.Lost, result.Fragment, result.ForbiddenWord, nil
+	return
 }
 
 func haveSameRoot(ctx context.Context, word1, word2 string) (bool, error) {
@@ -437,4 +448,12 @@ func checkNotEmpty(res *genai.GenerateContentResponse) {
 func textOf(res *genai.GenerateContentResponse) string {
 	checkNotEmpty(res)
 	return res.Candidates[0].Content.Parts[0].Text
+}
+
+func containsCaseInsensitive(text, fragment string) bool {
+	return strings.Contains(strings.ToLower(text), strings.ToLower(fragment))
+}
+
+func equalCaseInsensitive(s1, s2 string) bool {
+	return strings.ToLower(s1) == strings.ToLower(s2)
 }
