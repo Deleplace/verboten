@@ -6,7 +6,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	golang.org/x/sync v0.18.0
 	golang.org/x/text v0.30.0
-	google.golang.org/genai v1.36.0
+	google.golang.org/genai v1.58.0
 )
 
 require (

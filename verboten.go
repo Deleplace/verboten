@@ -123,7 +123,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 	if vg.genaiClient.ClientConfig().Backend == genai.BackendVertexAI {
 		model = "gemini-live-2.5-flash-preview-native-audio-09-2025"
 	} else {
-		model = "gemini-2.5-flash-native-audio-preview-09-2025"
+		model = "gemini-3.1-flash-live-preview"
 	}
 
 	// Gemini Live session 1 : model listens to the human and guesses the secret word

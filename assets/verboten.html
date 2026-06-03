@@ -164,7 +164,7 @@
             }
 
             function createAudioContent(msg) {
-                data = { 'media': { 'data': msg,  'mimeType': 'audio/pcm'  } };
+                data = { 'audio': { 'data': msg,  'mimeType': 'audio/pcm'  } };
                 return JSON.stringify(data);
             }
 
