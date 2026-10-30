@@ -125,6 +125,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 	} else {
 		model = "gemini-3.1-flash-live-preview"
 	}
+	log.Printf("Using model %q", model)
 
 	// Gemini Live session 1 : model listens to the human and guesses the secret word
 	config := &genai.LiveConnectConfig{}
