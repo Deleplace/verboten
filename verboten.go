@@ -18,6 +18,7 @@ import (
 
 type VerbotenGameServer struct {
 	genaiClient *genai.Client
+	Verbose     bool
 }
 
 func NewServer(genaiClient *genai.Client) *VerbotenGameServer {
@@ -191,6 +192,14 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				log.Println("guesser model deconnected: ", err)
 				return
+			}
+			if vg.Verbose && message.ServerContent != nil {
+				if it := message.ServerContent.InputTranscription; it != nil && strings.TrimSpace(it.Text) != "" {
+					log.Printf("Game %s Human says %q", gameID, it.Text)
+				}
+				if ot := message.ServerContent.OutputTranscription; ot != nil && strings.TrimSpace(ot.Text) != "" {
+					log.Printf("Game %s Guesser says %q", gameID, ot.Text)
+				}
 			}
 			messageBytes, err := json.Marshal(message)
 			if err != nil {

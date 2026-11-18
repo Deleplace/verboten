@@ -12,6 +12,10 @@ import (
 )
 
 func main() {
+	var verbose bool
+	const verboseUsage = "log transcribed words spoken by the human player and the AI guesser"
+	flag.BoolVar(&verbose, "verbose", false, verboseUsage)
+	flag.BoolVar(&verbose, "v", false, verboseUsage+" (shorthand)")
 	flag.Parse()
 	ctx := context.Background()
 
@@ -42,6 +46,7 @@ func main() {
 	fmt.Println()
 
 	server := verboten.NewServer(client)
+	server.Verbose = verbose
 	err = server.Start(ctx)
 	if err != nil {
 		log.Fatal(err)

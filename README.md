@@ -6,6 +6,7 @@ and guesses the word.
 ## How to play
 
 - Install the [Go](https://go.dev) programming language
+- TODO set environment variables
 - In the root folder of the repo, launch the command `go run ./cmd/web`
 - Open your browser at http://localhost:8080/
 
