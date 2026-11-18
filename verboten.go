@@ -3,16 +3,20 @@ package verboten
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"math/rand"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"text/template"
 
 	_ "embed"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/genai"
 )
 
@@ -91,16 +95,50 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+const declareLossFuncName = "declare_loss"
+
+type judgeMessage struct {
+	Judge *judgeVerdict `json:"judge"`
+}
+
+type judgeVerdict struct {
+	Lost          bool   `json:"lost"`
+	ForbiddenWord string `json:"forbiddenWord,omitempty"`
+	SpokenWord    string `json:"spokenWord,omitempty"`
+}
+
+func judgeSystemInstruction(langName string, forbiddenWords []string) string {
+	return fmt.Sprintf(`You are the Judge in a live voice game of "Verboten" (Proscribed Words), played in %s.
+You are listening directly to the human player's microphone as they describe a secret word to an AI guesser.
+
+Here are the forbidden words: %s.
+
+Rules:
+1. If the human player says ANY of these forbidden words, or a very resembling word (such as a plural, feminine, verb conjugation, derivative, compound, or word sharing the same root/stem), or a translation of any of these forbidden words in another language, immediately interrupt the game and declare the game is lost by calling %s.
+2. Synonyms, descriptions, or semantically related words that do NOT sound like and do NOT share the same root as any forbidden word are allowed (for example, saying "mozzarella" when "Cheese" is forbidden, or "ficelle" when "Corde" is forbidden, is valid and must NOT end the game).
+3. Do NOT call %s on background noise or hesitation sounds unless you clearly hear a forbidden or very resembling word.
+4. If the human player has NOT said any forbidden or very resembling word, do NOT call %s; simply reply "OK" and keep listening.`,
+		langName,
+		strings.Join(forbiddenWords, ", "),
+		declareLossFuncName,
+		declareLossFuncName,
+		declareLossFuncName,
+	)
+}
+
 func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 	lang := strings.TrimPrefix(r.URL.Path, "/live/")
-	var prompt string
+	var prompt, langName string
 	switch lang {
 	case "en":
 		prompt = guesserPrompt
+		langName = "English"
 	case "fr":
 		prompt = guesserPrompt_fr
+		langName = "French"
 	case "ar":
 		prompt = guesserPrompt_ar
+		langName = "Arabic"
 	default:
 		log.Printf("unsupported language: %q", lang)
 		http.NotFound(w, r)
@@ -109,7 +147,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 
 	c, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Fatal("upgrade error: ", err)
+		log.Println("upgrade error: ", err)
 		return
 	}
 	defer c.Close()
@@ -118,7 +156,8 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 	forbiddenWords := r.URL.Query()["forbidden"]
 	log.Printf("Starting game %s in %s with proscribed words %q", gameID, lang, forbiddenWords)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	var model string
 	if vg.genaiClient.ClientConfig().Backend == genai.BackendVertexAI {
@@ -128,69 +167,127 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("Using model %q", model)
 
-	// Gemini Live session 1 : model listens to the human and guesses the secret word
-	config := &genai.LiveConnectConfig{}
-	config.SystemInstruction = &genai.Content{
-		Parts: []*genai.Part{
-			{Text: prompt},
-		},
-	}
-	voiceName := "Puck"
-	config.SpeechConfig = &genai.SpeechConfig{
-		VoiceConfig: &genai.VoiceConfig{
-			PrebuiltVoiceConfig: &genai.PrebuiltVoiceConfig{
-				VoiceName: voiceName,
-			},
-		},
-	}
-	config.ResponseModalities = []genai.Modality{genai.ModalityAudio}
-	config.InputAudioTranscription = &genai.AudioTranscriptionConfig{}
-	config.OutputAudioTranscription = &genai.AudioTranscriptionConfig{}
 	var shortDuration int32 = 100
-	config.RealtimeInputConfig = &genai.RealtimeInputConfig{
+	realtimeInputConfig := &genai.RealtimeInputConfig{
 		AutomaticActivityDetection: &genai.AutomaticActivityDetection{
-
 			StartOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
 			EndOfSpeechSensitivity:   "END_SENSITIVITY_HIGH",
 			PrefixPaddingMs:          &shortDuration,
 			SilenceDurationMs:        &shortDuration,
 		},
 	}
-	session, err := vg.genaiClient.Live.Connect(ctx, model, config)
-	if err != nil {
-		log.Fatal("connect to model error: ", err)
+
+	// Gemini Live session 1 (Guesser): listens to the human and guesses the secret word,
+	// without knowing any of the forbidden words.
+	config := &genai.LiveConnectConfig{
+		SystemInstruction: &genai.Content{
+			Parts: []*genai.Part{
+				{Text: prompt},
+			},
+		},
+		SpeechConfig: &genai.SpeechConfig{
+			VoiceConfig: &genai.VoiceConfig{
+				PrebuiltVoiceConfig: &genai.PrebuiltVoiceConfig{
+					VoiceName: "Puck",
+				},
+			},
+		},
+		ResponseModalities:       []genai.Modality{genai.ModalityAudio},
+		InputAudioTranscription:  &genai.AudioTranscriptionConfig{},
+		OutputAudioTranscription: &genai.AudioTranscriptionConfig{},
+		RealtimeInputConfig:      realtimeInputConfig,
 	}
-	defer session.Close()
 
-	// Gemini Live session 2 : model listens to the human and guesses the secret word
-	configJudge := &genai.LiveConnectConfig{}
-	configJudge.SystemInstruction = &genai.Content{
-		Parts: []*genai.Part{
-			{Text: `
-				You're a judge listening to a human player of Proscribed Words, who is not allowed to
-				say any of the words from the proscribed list. If the human player says any of them,
-				or a very close word with the same radical, or one of the words translated in aother
-				language, then pronounce only the phrase from the human that violated the rule.
-
-				The proscribed words are: ` + strings.Join(forbiddenWords, ", ")},
+	// Gemini Live session 2 (Judge): listens to the same human voice stream, knows the
+	// forbidden words, and calls declare_loss if the human utters one (or a resembling word).
+	configJudge := &genai.LiveConnectConfig{
+		SystemInstruction: &genai.Content{
+			Parts: []*genai.Part{
+				{Text: judgeSystemInstruction(langName, forbiddenWords)},
+			},
+		},
+		ResponseModalities:  []genai.Modality{genai.ModalityAudio},
+		RealtimeInputConfig: realtimeInputConfig,
+		Tools: []*genai.Tool{
+			{
+				FunctionDeclarations: []*genai.FunctionDeclaration{
+					{
+						Name:        declareLossFuncName,
+						Description: "Interrupt the game and declare the game is lost when the human player utters one of the forbidden words, a very resembling word (same root/inflection), or its translation.",
+						Parameters: &genai.Schema{
+							Type: genai.TypeObject,
+							Properties: map[string]*genai.Schema{
+								"forbidden_word": {
+									Type:        genai.TypeString,
+									Description: "The word from the forbidden list that was violated.",
+								},
+								"spoken_word": {
+									Type:        genai.TypeString,
+									Description: "The word or phrase spoken by the human player that triggered the loss.",
+								},
+							},
+							Required: []string{"forbidden_word", "spoken_word"},
+						},
+					},
+				},
+			},
 		},
 	}
-	configJudge.ResponseModalities = []genai.Modality{genai.ModalityAudio}
-	configJudge.OutputAudioTranscription = &genai.AudioTranscriptionConfig{}
-	sessionJudge, err := vg.genaiClient.Live.Connect(ctx, model, configJudge)
-	if err != nil {
-		log.Fatal("connect to model error: ", err)
+
+	var session, sessionJudge *genai.Session
+	connectGroup, connectCtx := errgroup.WithContext(ctx)
+	connectGroup.Go(func() error {
+		var err error
+		session, err = vg.genaiClient.Live.Connect(connectCtx, model, config)
+		if err != nil {
+			return fmt.Errorf("connect guesser model: %w", err)
+		}
+		return nil
+	})
+	connectGroup.Go(func() error {
+		var err error
+		sessionJudge, err = vg.genaiClient.Live.Connect(connectCtx, model, configJudge)
+		if err != nil {
+			return fmt.Errorf("connect judge model: %w", err)
+		}
+		return nil
+	})
+	if err := connectGroup.Wait(); err != nil {
+		log.Printf("Game %s connect error: %v", gameID, err)
+		if session != nil {
+			session.Close()
+		}
+		if sessionJudge != nil {
+			sessionJudge.Close()
+		}
+		return
 	}
+	defer session.Close()
 	defer sessionJudge.Close()
+
+	var (
+		writeMu  sync.Mutex
+		gameOver atomic.Bool
+	)
+	writeToBrowser := func(payload []byte) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return c.WriteMessage(websocket.TextMessage, payload)
+	}
 
 	go func() {
 		// Guessing Loop:
-		// Receive audio data from the Gemini Live session.
+		// Receive audio and transcription data from the Guesser Gemini Live session.
 		// Forward it to the player browser, via WebSocket.
 		for {
 			message, err := session.Receive()
 			if err != nil {
-				log.Println("guesser model deconnected: ", err)
+				if !gameOver.Load() {
+					log.Println("guesser model deconnected: ", err)
+				}
+				return
+			}
+			if gameOver.Load() {
 				return
 			}
 			if vg.Verbose && message.ServerContent != nil {
@@ -203,55 +300,86 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 			}
 			messageBytes, err := json.Marshal(message)
 			if err != nil {
-				log.Fatal("marshal guesser model response error: ", message, err)
+				log.Println("marshal guesser model response error: ", message, err)
+				return
 			}
-			err = c.WriteMessage(websocket.TextMessage, messageBytes)
-			if err != nil {
+			if err := writeToBrowser(messageBytes); err != nil {
 				log.Println("write message error: ", err)
-				break
+				return
+			}
+		}
+	}()
+
+	go func() {
+		// Judge Loop:
+		// Receive tool calls from the Judge Gemini Live session when a forbidden word is uttered.
+		// Signal to the browser to interrupt and end the game.
+		for {
+			message, err := sessionJudge.Receive()
+			if err != nil {
+				if !gameOver.Load() {
+					log.Println("judge deconnected: ", err)
+				}
+				return
+			}
+			if message.ToolCall != nil {
+				for _, fc := range message.ToolCall.FunctionCalls {
+					if fc.Name == declareLossFuncName {
+						forbiddenWord, _ := fc.Args["forbidden_word"].(string)
+						spokenWord, _ := fc.Args["spoken_word"].(string)
+						if !gameOver.CompareAndSwap(false, true) {
+							return
+						}
+						log.Printf("Game %s Judge declared loss: spoken=%q forbidden=%q", gameID, spokenWord, forbiddenWord)
+						verdictBytes, err := json.Marshal(judgeMessage{
+							Judge: &judgeVerdict{
+								Lost:          true,
+								ForbiddenWord: forbiddenWord,
+								SpokenWord:    spokenWord,
+							},
+						})
+						if err != nil {
+							log.Println("marshal judge verdict error: ", err)
+							return
+						}
+						if err := writeToBrowser(verdictBytes); err != nil {
+							log.Println("write judge verdict error: ", err)
+						}
+						return
+					}
+				}
 			}
 		}
 	}()
 
 	for {
 		// Human speech Loop:
-		// Receive audio  and transcript data from player browser, via WebSocket.
-		// Forward it to the model guesser player's Gemini Live session.
-		// Also forward it to the model judge's Gemini Live session.
+		// Receive voice packets from the player browser, via WebSocket.
+		// Forward them to both the Guesser's and the Judge's Gemini Live sessions.
 		_, message, err := c.ReadMessage()
 		if err != nil {
-			log.Println("read from client error: ", err)
+			if !gameOver.Load() {
+				log.Println("read from client error: ", err)
+			}
+			gameOver.Store(true)
+			break
+		}
+		if gameOver.Load() {
 			break
 		}
 
 		var realtimeInput genai.LiveRealtimeInput
 		if err := json.Unmarshal(message, &realtimeInput); err != nil {
-			log.Fatal("unmarshal message error ", string(message), err)
+			log.Println("unmarshal message error: ", string(message), err)
+			continue
 		}
-		session.SendRealtimeInput(realtimeInput)
-		sessionJudge.SendRealtimeInput(realtimeInput)
+		if err := session.SendRealtimeInput(realtimeInput); err != nil && !gameOver.Load() {
+			log.Println("send to guesser error: ", err)
+		}
+		if err := sessionJudge.SendRealtimeInput(realtimeInput); err != nil && !gameOver.Load() {
+			log.Println("send to judge error: ", err)
+		}
 	}
-
-	go func() {
-		// Judge Loop:
-		// Receive audio and transcript data from the Gemini Live session.
-		// Signal to the browser to end the game.
-		for {
-			message, err := sessionJudge.Receive()
-			if err != nil {
-				log.Println("judge deconnected: ", err)
-				return
-			}
-			sc := message.ServerContent
-			if sc != nil {
-				ot := sc.OutputTranscription
-				if ot != nil {
-					log.Printf("Game %s Judge says %q", gameID, ot.Text)
-					// TODO err = c.WriteMessage(websocket.TextMessage, messageBytes)
-				}
-			}
-		}
-	}()
 }
 
 const alphanum = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"

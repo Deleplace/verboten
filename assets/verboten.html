@@ -107,9 +107,12 @@
             var audioChunksReceived = [];
             var audioChunksSent = [];
             var processor; // Audio processor.
+            var mediaStream;
             var inputTimer; // Timer for input button.
             var humanSpeech = '';
             var modelSpeech = '';
+            var gameEnded = false;
+            var winTimeout = null;
 
             var sampleRate = 24000;
 
@@ -215,18 +218,16 @@
                 }
                 ws.onmessage = function (evt) {
                     data = JSON.parse(evt.data);
+                    if (data.judge && data.judge.lost) {
+                        console.log('Judge declared loss:', data.judge);
+                        endGame(false, formatJudgeLossMessage(data.judge.spokenWord, data.judge.forbiddenWord));
+                        return;
+                    }
                     if (!data.serverContent) return;
 
                     if (data.serverContent.inputTranscription && data.serverContent.inputTranscription.text) {
                         humanSpeech += data.serverContent.inputTranscription.text + " ";
                         console.log('Human says: ', humanSpeech);
-
-                        for (const forbiddenWord of allForbiddenWords) {
-                            if (humanSpeech.toLowerCase().includes(forbiddenWord.toLowerCase())) {
-                                endGame(false, phrases[currentLanguage].youSaidForbidden(forbiddenWord));
-                                return;
-                            }
-                        }
                     }
                     const lastModelText = data?.serverContent?.outputTranscription?.text;
                     if (data.serverContent.outputTranscription && lastModelText) {
@@ -235,7 +236,7 @@
                         if (modelSpeech.toLowerCase().includes(targetWord.word.toLowerCase())) {
                             // Give 1200ms for the contestant to actually pronounce the word, then
                             // proclaim victory.
-                            setTimeout(() => {
+                            winTimeout = setTimeout(() => {
                                 endGame(true, phrases[currentLanguage].modelGuessedWord(targetWord.word));
                             }, 1200);
                             return;
@@ -276,6 +277,10 @@
                 if (processor) {
                     processor.disconnect(); // Disconnect processor
                 }
+                if (mediaStream) {
+                    mediaStream.getTracks().forEach(track => track.stop());
+                    mediaStream = null;
+                }
                 isRecording = false;
             }
 
@@ -287,6 +292,7 @@
             function recordAudio() {
                 console.debug('recordAudio()');
                 navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+                    mediaStream = stream;
                     const audioContext = new AudioContext({ sampleRate: sampleRate }); // Explicitly set sample rate.
                     const source = audioContext.createMediaStreamSource(stream);
                     processor = audioContext.createScriptProcessor(1024, 1, 1); // bufferSize, numInputChannels, numOutputChannels
@@ -469,6 +475,7 @@
                 playAgain: "Play Again",
                 micRequired: "Microphone access is required to play. Please allow it and try again.",
                 youSaidForbidden: (word) => `You said the proscribed word: "${word}"`,
+                youSaidTooClose: (spoken, forbidden) => `You said "${spoken}", which is too close to the proscribed word "${forbidden}"`,
                 modelGuessedWord: (word) => `The model guessed the word: "${word}"`,
                 goodJob: "Good job!",
                 microphoneUsage: "This game uses your microphone.",
@@ -488,6 +495,7 @@
                 playAgain: "Rejouer",
                 micRequired: "L'accès au microphone est requis pour jouer. Veuillez l'autoriser et réessayer.",
                 youSaidForbidden: (word) => `Vous avez dit le mot prohibé: "${word}"`,
+                youSaidTooClose: (spoken, forbidden) => `Vous avez dit "${spoken}", qui est trop proche du mot prohibé "${forbidden}"`,
                 modelGuessedWord: (word) => `Le modèle a deviné le mot: "${word}"`,
                 goodJob: "Bravo !",
                 microphoneUsage: "Ce jeu utilise votre microphone.",
@@ -632,11 +640,35 @@
 
         
 
+        function normalizeWord(s) {
+            return (s || '')
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .trim()
+                .toLowerCase();
+        }
+
+        function formatJudgeLossMessage(spokenWord, forbiddenWord) {
+            const langPhrases = phrases[currentLanguage] || phrases.en;
+            if (!spokenWord || !forbiddenWord) {
+                return langPhrases.youSaidForbidden(forbiddenWord || spokenWord || '');
+            }
+            if (normalizeWord(spokenWord) === normalizeWord(forbiddenWord) || !langPhrases.youSaidTooClose) {
+                return langPhrases.youSaidForbidden(forbiddenWord);
+            }
+            return langPhrases.youSaidTooClose(spokenWord, forbiddenWord);
+        }
+
         function startGame(language) {
             updateUIText(language);
             currentLanguage = language;
             humanSpeech = '';
             modelSpeech = '';
+            gameEnded = false;
+            if (winTimeout) {
+                clearTimeout(winTimeout);
+                winTimeout = null;
+            }
             preludeFinished = false;
             startScreen.classList.add('hidden');
             mainWordContainer.innerHTML = '';
@@ -714,6 +746,20 @@
         }
 
         function endGame(isWin, message) {
+            if (gameEnded) {
+                return;
+            }
+            gameEnded = true;
+            if (winTimeout) {
+                clearTimeout(winTimeout);
+                winTimeout = null;
+            }
+            recordStop();
+            if (!isWin) {
+                audioQueue = [];
+                audio.pause();
+                isAudioPlaying = false;
+            }
             if (ws) {
                 ws.close();
             }
