@@ -32,21 +32,26 @@ func NewServer(genaiClient *genai.Client) *VerbotenGameServer {
 }
 
 const guesserPrompt = `
-	You are playing the "guessing word" game where the human player with their microphone
-	is describing a word. Your job is to listen to the description and say only one word as
+	You are playing the "guessing word" game in English, where the human player with their microphone
+	is speaking in English to describe a secret English word.
+	Expect English spoken input from the human player, and respond unmistakably in English.
+	Your job is to listen to the description and say only one word as
 	your guess, every few seconds. You have only 3 guesses.
 	Don't say anything else than the word you're guessing.
 `
 
 const guesserPrompt_fr = `
-	Vous jouez au jeu du "mot à deviner" où le joueur humain avec son microphone
-	décrit un mot. Votre travail consiste à écouter la description et à ne dire qu'un seul mot comme
+	Vous jouez au jeu du "mot à deviner" en français, où le joueur humain avec son microphone
+	s'exprime en français pour décrire un mot secret français.
+	Attendez-vous à entendre du français en entrée audio, et répondez exclusivement en français.
+	Votre travail consiste à écouter la description et à ne dire qu'un seul mot comme
 	votre suggestion, toutes les quelques secondes. Vous n'avez que 3 essais.
 	Ne dites rien d'autre que le mot que vous devinez.
 `
 
 const guesserPrompt_ar = `
-	أنت تلعب لعبة "تخمين الكلمات" حيث يقوم اللاعب البشري بميكروفونه بوصف كلمة.
+	أنت تلعب لعبة "تخمين الكلمات" باللغة العربية حيث يتحدث اللاعب البشري بميكروفونه باللغة العربية لوصف كلمة سرية.
+	توقع سماع اللغة العربية كمدخل صوتي، وأجب باللغة العربية فقط.
 	مهمتك هي الاستماع إلى الوصف وقول كلمة واحدة فقط كتخمين، كل بضع ثوان.
 	لديك 3 تخمينات فقط.
 	لا تقل أي شيء آخر غير الكلمة التي تخمنها.
@@ -107,20 +112,24 @@ type judgeVerdict struct {
 	SpokenWord    string `json:"spokenWord,omitempty"`
 }
 
-func judgeSystemInstruction(langName string, forbiddenWords []string) string {
-	return fmt.Sprintf(`You are the Judge in a live voice game of "Verboten" (Proscribed Words), played in %s.
-You are listening directly to the human player's microphone as they describe a secret word to an AI guesser.
+func judgeSystemInstruction(langName, languageCode string, forbiddenWords []string) string {
+	return fmt.Sprintf(`You are the Judge in a live voice game of "Verboten" (Proscribed Words), played in %s (%s).
+The human player is speaking in %s into their microphone to describe a secret word to an AI guesser; expect %s spoken input.
 
 Here are the forbidden words: %s.
 
 Rules:
-1. If the human player says ANY of these forbidden words, or a very resembling word (such as a plural, feminine, verb conjugation, derivative, compound, or word sharing the same root/stem), or a translation of any of these forbidden words in another language, immediately interrupt the game and declare the game is lost by calling %s.
-2. Synonyms, descriptions, or semantically related words that do NOT sound like and do NOT share the same root as any forbidden word are allowed (for example, saying "mozzarella" when "Cheese" is forbidden, or "ficelle" when "Corde" is forbidden, is valid and must NOT end the game).
+1. If the human player says ANY of these forbidden words, or a very resembling word (such as a plural, feminine, verb conjugation, derivative, compound, or word sharing the same root/stem), or tries to cheat by translating any of these forbidden words into another language, immediately interrupt the game and declare the game is lost by calling %s.
+2. Synonyms, descriptions, or semantically related words in %s that do NOT sound like and do NOT share the same root as any forbidden word are allowed (for example, saying "mozzarella" when "Cheese" is forbidden, or "ficelle" when "Corde" is forbidden, is valid and must NOT end the game).
 3. Do NOT call %s on background noise or hesitation sounds unless you clearly hear a forbidden or very resembling word.
 4. If the human player has NOT said any forbidden or very resembling word, do NOT call %s; simply reply "OK" and keep listening.`,
 		langName,
+		languageCode,
+		langName,
+		langName,
 		strings.Join(forbiddenWords, ", "),
 		declareLossFuncName,
+		langName,
 		declareLossFuncName,
 		declareLossFuncName,
 	)
@@ -128,17 +137,20 @@ Rules:
 
 func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 	lang := strings.TrimPrefix(r.URL.Path, "/live/")
-	var prompt, langName string
+	var prompt, langName, languageCode string
 	switch lang {
 	case "en":
 		prompt = guesserPrompt
 		langName = "English"
+		languageCode = "en-US"
 	case "fr":
 		prompt = guesserPrompt_fr
 		langName = "French"
+		languageCode = "fr-FR"
 	case "ar":
 		prompt = guesserPrompt_ar
 		langName = "Arabic"
+		languageCode = "ar-EG"
 	default:
 		log.Printf("unsupported language: %q", lang)
 		http.NotFound(w, r)
@@ -177,6 +189,15 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
+	var audioTranscriptionConfig *genai.AudioTranscriptionConfig
+	if vg.genaiClient.ClientConfig().Backend == genai.BackendVertexAI {
+		audioTranscriptionConfig = &genai.AudioTranscriptionConfig{
+			LanguageCodes: []string{languageCode},
+		}
+	} else {
+		audioTranscriptionConfig = &genai.AudioTranscriptionConfig{}
+	}
+
 	// Gemini Live session 1 (Guesser): listens to the human and guesses the secret word,
 	// without knowing any of the forbidden words.
 	config := &genai.LiveConnectConfig{
@@ -186,6 +207,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		SpeechConfig: &genai.SpeechConfig{
+			LanguageCode: languageCode,
 			VoiceConfig: &genai.VoiceConfig{
 				PrebuiltVoiceConfig: &genai.PrebuiltVoiceConfig{
 					VoiceName: "Puck",
@@ -193,8 +215,8 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		ResponseModalities:       []genai.Modality{genai.ModalityAudio},
-		InputAudioTranscription:  &genai.AudioTranscriptionConfig{},
-		OutputAudioTranscription: &genai.AudioTranscriptionConfig{},
+		InputAudioTranscription:  audioTranscriptionConfig,
+		OutputAudioTranscription: audioTranscriptionConfig,
 		RealtimeInputConfig:      realtimeInputConfig,
 	}
 
@@ -203,8 +225,11 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 	configJudge := &genai.LiveConnectConfig{
 		SystemInstruction: &genai.Content{
 			Parts: []*genai.Part{
-				{Text: judgeSystemInstruction(langName, forbiddenWords)},
+				{Text: judgeSystemInstruction(langName, languageCode, forbiddenWords)},
 			},
+		},
+		SpeechConfig: &genai.SpeechConfig{
+			LanguageCode: languageCode,
 		},
 		ResponseModalities:  []genai.Modality{genai.ModalityAudio},
 		RealtimeInputConfig: realtimeInputConfig,

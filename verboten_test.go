@@ -195,3 +195,102 @@ func TestDoubleLivestreamJudgeAndGuesser(t *testing.T) {
 		t.Fatalf("unexpected judge verdict: %+v", msg.Judge)
 	}
 }
+
+func TestFrenchLanguageConfiguration(t *testing.T) {
+	for _, backend := range []genai.Backend{genai.BackendGeminiAPI, genai.BackendVertexAI} {
+		t.Run(backend.String(), func(t *testing.T) {
+			var (
+				mu     sync.Mutex
+				setups []string
+				bothUp = make(chan struct{})
+			)
+
+			fakeGemini := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				c, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					t.Errorf("fake gemini upgrade: %v", err)
+					return
+				}
+				defer c.Close()
+
+				_, setupBytes, err := c.ReadMessage()
+				if err != nil {
+					t.Errorf("fake gemini read setup: %v", err)
+					return
+				}
+				_ = c.WriteMessage(websocket.TextMessage, []byte(`{"setupComplete":{}}`))
+
+				mu.Lock()
+				setups = append(setups, string(setupBytes))
+				if len(setups) == 2 {
+					close(bothUp)
+				}
+				mu.Unlock()
+
+				for {
+					if _, _, err := c.ReadMessage(); err != nil {
+						return
+					}
+				}
+			}))
+			defer fakeGemini.Close()
+
+			wsBaseURL := "ws://" + strings.TrimPrefix(fakeGemini.URL, "http://")
+			cfg := &genai.ClientConfig{
+				Backend: backend,
+				HTTPOptions: genai.HTTPOptions{
+					BaseURL: wsBaseURL,
+				},
+			}
+			if backend == genai.BackendVertexAI {
+				cfg.HTTPOptions.APIVersion = "v1beta1"
+			} else {
+				cfg.APIKey = "test-api-key"
+				cfg.HTTPOptions.APIVersion = "v1beta"
+			}
+
+			client, err := genai.NewClient(context.Background(), cfg)
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+
+			appServer := httptest.NewServer(http.HandlerFunc(NewServer(client).liveGame))
+			defer appServer.Close()
+
+			browserURL := "ws://" + strings.TrimPrefix(appServer.URL, "http://") +
+				"/live/fr?forbidden=Fromage&forbidden=P%C3%A2te"
+			browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, nil)
+			if err != nil {
+				t.Fatalf("dial liveGame: %v", err)
+			}
+			defer browserConn.Close()
+
+			select {
+			case <-bothUp:
+			case <-time.After(3 * time.Second):
+				t.Fatal("timed out waiting for both French Live sessions")
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			for i, setup := range setups {
+				if !strings.Contains(setup, `"languageCode":"fr-FR"`) {
+					t.Errorf("session %d missing speechConfig languageCode fr-FR: %s", i, setup)
+				}
+				isJudge := strings.Contains(setup, declareLossFuncName)
+				if isJudge {
+					if !strings.Contains(setup, "expect French spoken input") {
+						t.Errorf("judge setup missing French spoken input instruction: %s", setup)
+					}
+				} else {
+					if !strings.Contains(setup, "entendre du français en entrée audio") {
+						t.Errorf("guesser setup missing French spoken input instruction: %s", setup)
+					}
+					if backend == genai.BackendVertexAI && !strings.Contains(setup, `"languageCodes":["fr-FR"]`) {
+						t.Errorf("vertex guesser setup missing transcription languageCodes fr-FR: %s", setup)
+					}
+				}
+			}
+		})
+	}
+}
