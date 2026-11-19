@@ -25,13 +25,15 @@ import (
 )
 
 type VerbotenGameServer struct {
-	genaiClient *genai.Client
-	Verbose     bool
+	genaiClient   *genai.Client
+	Verbose       bool
+	RecordingsDir string
 }
 
 func NewServer(genaiClient *genai.Client) *VerbotenGameServer {
 	return &VerbotenGameServer{
-		genaiClient: genaiClient,
+		genaiClient:   genaiClient,
+		RecordingsDir: DefaultRecordingsDir,
 	}
 }
 
@@ -235,6 +237,21 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("Using model %q", model)
 
+	recorder, err := newGameRecorder(vg.RecordingsDir, gameID, lang, languageCode, model, targetWord, otherForbiddenWords)
+	if err != nil {
+		log.Printf("Game %s recording disabled: %v", gameID, err)
+	} else {
+		log.Printf("Recording game %s to %s", gameID, recorder.Dir())
+		defer func() {
+			if err := recorder.Close(); err != nil {
+				log.Printf("Game %s close recorder error: %v", gameID, err)
+			}
+		}()
+	}
+
+	var loopsWG sync.WaitGroup
+	defer loopsWG.Wait()
+
 	var shortDuration int32 = 100
 	realtimeInputConfig := &genai.RealtimeInputConfig{
 		AutomaticActivityDetection: &genai.AutomaticActivityDetection{
@@ -362,7 +379,9 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 		return c.WriteMessage(websocket.TextMessage, payload)
 	}
 
+	loopsWG.Add(1)
 	go func() {
+		defer loopsWG.Done()
 		// Guessing Loop:
 		// Receive audio and transcription data from the Guesser Gemini Live session.
 		// Forward it to the player browser, via WebSocket.
@@ -377,12 +396,25 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 			if gameOver.Load() {
 				return
 			}
-			if vg.Verbose && message.ServerContent != nil {
+			if message.ServerContent != nil {
 				if it := message.ServerContent.InputTranscription; it != nil && strings.TrimSpace(it.Text) != "" {
-					log.Printf("Game %s Human says %q", gameID, it.Text)
+					recorder.RecordTranscript("human", it.Text)
+					if vg.Verbose {
+						log.Printf("Game %s Human says %q", gameID, it.Text)
+					}
 				}
 				if ot := message.ServerContent.OutputTranscription; ot != nil && strings.TrimSpace(ot.Text) != "" {
-					log.Printf("Game %s Guesser says %q", gameID, ot.Text)
+					recorder.RecordTranscript("guesser", ot.Text)
+					if vg.Verbose {
+						log.Printf("Game %s Guesser says %q", gameID, ot.Text)
+					}
+				}
+				if message.ServerContent.ModelTurn != nil {
+					for _, part := range message.ServerContent.ModelTurn.Parts {
+						if part != nil && part.InlineData != nil && strings.HasPrefix(part.InlineData.MIMEType, "audio/pcm") && len(part.InlineData.Data) > 0 {
+							recorder.RecordGuesserAudio(part.InlineData.Data, part.InlineData.MIMEType)
+						}
+					}
 				}
 			}
 			messageBytes, err := json.Marshal(message)
@@ -397,7 +429,9 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	loopsWG.Add(1)
 	go func() {
+		defer loopsWG.Done()
 		// Judge Loop:
 		// Receive tool calls from the Judge Gemini Live session when a forbidden word is uttered.
 		// Signal to the browser to interrupt and end the game.
@@ -416,6 +450,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 						spokenWord, _ := fc.Args["spoken_word"].(string)
 						reason, _ := fc.Args["reason"].(string)
 						if reason == "translation" && targetWord != "" && normalizeWord(forbiddenWord) != normalizeWord(targetWord) {
+							recorder.RecordJudgeEvent(fc.Name, true, spokenWord, forbiddenWord, reason)
 							if vg.Verbose {
 								log.Printf("Game %s ignoring Judge translation call for non-target word %q (target=%q)", gameID, forbiddenWord, targetWord)
 							}
@@ -440,6 +475,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 						if !gameOver.CompareAndSwap(false, true) {
 							return
 						}
+						recorder.RecordJudgeEvent(fc.Name, false, spokenWord, forbiddenWord, reason)
 						if reason != "" {
 							log.Printf("Game %s Judge declared loss (%s): spoken=%q forbidden=%q", gameID, reason, spokenWord, forbiddenWord)
 						} else {
@@ -487,6 +523,9 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal(message, &realtimeInput); err != nil {
 			log.Println("unmarshal message error: ", string(message), err)
 			continue
+		}
+		if realtimeInput.Audio != nil && len(realtimeInput.Audio.Data) > 0 {
+			recorder.RecordHumanAudio(realtimeInput.Audio.Data, realtimeInput.Audio.MIMEType)
 		}
 		if err := session.SendRealtimeInput(realtimeInput); err != nil && !gameOver.Load() {
 			log.Println("send to guesser error: ", err)

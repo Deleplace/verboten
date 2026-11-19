@@ -1,10 +1,15 @@
 package verboten
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -83,10 +88,16 @@ func TestDoubleLivestreamJudgeAndGuesser(t *testing.T) {
 		t.Fatalf("NewClient: %v", err)
 	}
 
+	recordingsDir := t.TempDir()
 	gameServer := NewServer(client)
 	gameServer.Verbose = true
+	gameServer.RecordingsDir = recordingsDir
 
-	appServer := httptest.NewServer(http.HandlerFunc(gameServer.liveGame))
+	handlerDone := make(chan struct{})
+	appServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(handlerDone)
+		gameServer.liveGame(w, r)
+	}))
 	defer appServer.Close()
 
 	browserURL := "ws://" + strings.TrimPrefix(appServer.URL, "http://") +
@@ -141,7 +152,9 @@ func TestDoubleLivestreamJudgeAndGuesser(t *testing.T) {
 	}
 
 	// Browser sends a single voice packet -> BOTH Guesser and Judge must receive it.
-	audioMsg := `{"audio":{"data":"AAAA","mimeType":"audio/pcm"}}`
+	humanPCM := []byte{0x01, 0x02, 0x03, 0x04}
+	humanB64 := base64.StdEncoding.EncodeToString(humanPCM)
+	audioMsg := `{"audio":{"data":"` + humanB64 + `","mimeType":"audio/pcm"}}`
 	if err := browserConn.WriteMessage(websocket.TextMessage, []byte(audioMsg)); err != nil {
 		t.Fatalf("browser write audio: %v", err)
 	}
@@ -152,7 +165,7 @@ func TestDoubleLivestreamJudgeAndGuesser(t *testing.T) {
 	} {
 		select {
 		case pkt := <-ch:
-			if !strings.Contains(pkt, "AAAA") {
+			if !strings.Contains(pkt, humanB64) {
 				t.Errorf("%s received unexpected packet: %s", name, pkt)
 			}
 		case <-time.After(2 * time.Second):
@@ -160,8 +173,10 @@ func TestDoubleLivestreamJudgeAndGuesser(t *testing.T) {
 		}
 	}
 
-	// Guesser streams a transcription/guess back to browser.
-	guesserReply := `{"serverContent":{"inputTranscription":{"text":"yellow citrus"},"outputTranscription":{"text":"orange"}}}`
+	// Guesser streams audio + transcription/guess back to browser.
+	guesserPCM := []byte{0x10, 0x20, 0x30, 0x40, 0x50, 0x60}
+	guesserB64 := base64.StdEncoding.EncodeToString(guesserPCM)
+	guesserReply := `{"serverContent":{"inputTranscription":{"text":"yellow citrus"},"outputTranscription":{"text":"orange"},"modelTurn":{"parts":[{"inlineData":{"mimeType":"audio/pcm;rate=24000","data":"` + guesserB64 + `"}}]}}}`
 	if err := guesserSess.conn.WriteMessage(websocket.TextMessage, []byte(guesserReply)); err != nil {
 		t.Fatalf("guesser write reply: %v", err)
 	}
@@ -208,6 +223,97 @@ func TestDoubleLivestreamJudgeAndGuesser(t *testing.T) {
 	}
 	if msg.Judge == nil || !msg.Judge.Lost || msg.Judge.ForbiddenWord != "lemon" || msg.Judge.SpokenWord != "citron" || msg.Judge.Reason != "translation" {
 		t.Fatalf("unexpected judge verdict: %+v", msg.Judge)
+	}
+
+	// Close browser connection so liveGame finishes and finalizes the game recording folder.
+	_ = browserConn.Close()
+	select {
+	case <-handlerDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for liveGame handler to finish and flush recording")
+	}
+
+	entries, err := os.ReadDir(recordingsDir)
+	if err != nil {
+		t.Fatalf("read recordingsDir: %v", err)
+	}
+	if len(entries) != 1 || !entries[0].IsDir() {
+		t.Fatalf("expected 1 game recording folder, got %d", len(entries))
+	}
+	gameDir := filepath.Join(recordingsDir, entries[0].Name())
+
+	metaBytes, err := os.ReadFile(filepath.Join(gameDir, "game.json"))
+	if err != nil {
+		t.Fatalf("read game.json: %v", err)
+	}
+	var rec GameRecording
+	if err := json.Unmarshal(metaBytes, &rec); err != nil {
+		t.Fatalf("unmarshal game.json: %v", err)
+	}
+	if rec.TargetWord != "lemon" {
+		t.Errorf("recorded target_word = %q, want %q", rec.TargetWord, "lemon")
+	}
+	if len(rec.ForbiddenWords) != 2 || rec.ForbiddenWords[0] != "apple" || rec.ForbiddenWords[1] != "banana" {
+		t.Errorf("recorded forbidden_words = %q, want [apple banana]", rec.ForbiddenWords)
+	}
+	if rec.HumanAudio == nil || rec.HumanAudio.File != "human.wav" || rec.HumanAudio.PacketCount != 1 || rec.HumanAudio.TotalBytes != int64(len(humanPCM)) || rec.HumanAudio.FirstPacketMs == nil {
+		t.Errorf("unexpected human_audio metadata: %+v", rec.HumanAudio)
+	}
+	if rec.GuesserAudio == nil || rec.GuesserAudio.File != "guesser.wav" || rec.GuesserAudio.PacketCount != 1 || rec.GuesserAudio.TotalBytes != int64(len(guesserPCM)) || rec.GuesserAudio.FirstPacketMs == nil {
+		t.Errorf("unexpected guesser_audio metadata: %+v", rec.GuesserAudio)
+	}
+	if len(rec.JudgeEvents) != 2 {
+		t.Fatalf("expected 2 judge events (1 ignored + 1 loss), got %+v", rec.JudgeEvents)
+	}
+	if !rec.JudgeEvents[0].Ignored || rec.JudgeEvents[0].ForbiddenWord != "apple" || rec.JudgeEvents[0].SpokenWord != "pomme" {
+		t.Errorf("unexpected first judge event: %+v", rec.JudgeEvents[0])
+	}
+	if rec.JudgeEvents[1].Ignored || rec.JudgeEvents[1].ForbiddenWord != "lemon" || rec.JudgeEvents[1].SpokenWord != "citron" || rec.JudgeEvents[1].Reason != "translation" {
+		t.Errorf("unexpected second judge event: %+v", rec.JudgeEvents[1])
+	}
+
+	assertWAVFile(t, filepath.Join(gameDir, "human.wav"), 24000, humanPCM)
+	assertWAVFile(t, filepath.Join(gameDir, "guesser.wav"), 24000, guesserPCM)
+
+	eventsBytes, err := os.ReadFile(filepath.Join(gameDir, "events.jsonl"))
+	if err != nil {
+		t.Fatalf("read events.jsonl: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(eventsBytes)), "\n")
+	if len(lines) < 6 {
+		t.Fatalf("expected at least 6 events in events.jsonl, got %d:\n%s", len(lines), eventsBytes)
+	}
+	for i, line := range lines {
+		var ev RecordingEvent
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			t.Fatalf("events.jsonl line %d invalid JSON: %v", i, err)
+		}
+		if ev.Type == "" {
+			t.Errorf("events.jsonl line %d missing type", i)
+		}
+	}
+}
+
+func assertWAVFile(t *testing.T, path string, wantSampleRate uint32, wantPCM []byte) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read WAV %s: %v", path, err)
+	}
+	if len(b) != wavHeaderSize+len(wantPCM) {
+		t.Fatalf("WAV %s len = %d, want %d", path, len(b), wavHeaderSize+len(wantPCM))
+	}
+	if string(b[0:4]) != "RIFF" || string(b[8:12]) != "WAVE" || string(b[12:16]) != "fmt " || string(b[36:40]) != "data" {
+		t.Fatalf("WAV %s invalid RIFF/WAVE header", path)
+	}
+	if gotRate := binary.LittleEndian.Uint32(b[24:28]); gotRate != wantSampleRate {
+		t.Errorf("WAV %s sampleRate = %d, want %d", path, gotRate, wantSampleRate)
+	}
+	if gotDataSize := binary.LittleEndian.Uint32(b[40:44]); gotDataSize != uint32(len(wantPCM)) {
+		t.Errorf("WAV %s dataSize = %d, want %d", path, gotDataSize, len(wantPCM))
+	}
+	if !bytes.Equal(b[wavHeaderSize:], wantPCM) {
+		t.Errorf("WAV %s PCM payload mismatch", path)
 	}
 }
 
@@ -269,7 +375,9 @@ func TestFrenchLanguageConfiguration(t *testing.T) {
 				t.Fatalf("NewClient: %v", err)
 			}
 
-			appServer := httptest.NewServer(http.HandlerFunc(NewServer(client).liveGame))
+			gameServer := NewServer(client)
+			gameServer.RecordingsDir = t.TempDir()
+			appServer := httptest.NewServer(http.HandlerFunc(gameServer.liveGame))
 			defer appServer.Close()
 
 			browserURL := "ws://" + strings.TrimPrefix(appServer.URL, "http://") +
