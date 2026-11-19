@@ -131,17 +131,23 @@ func TestDoubleLivestreamJudgeAndGuesser(t *testing.T) {
 	defer guesserSess.conn.Close()
 	defer judgeSess.conn.Close()
 
-	// Verify Guesser does NOT know any of the forbidden words.
+	// Verify Guesser does NOT know any of the forbidden words, and uses less eager end-of-speech VAD.
 	for _, w := range []string{"apple", "banana", "lemon"} {
 		if strings.Contains(strings.ToLower(guesserSess.setupRaw), w) {
 			t.Errorf("guesser setup leaked forbidden word %q: %s", w, guesserSess.setupRaw)
 		}
 	}
-	// Verify Judge DOES know all forbidden words.
+	if !strings.Contains(guesserSess.setupRaw, `"END_SENSITIVITY_LOW"`) || !strings.Contains(guesserSess.setupRaw, `"silenceDurationMs":500`) {
+		t.Errorf("guesser setup missing 500ms low-sensitivity VAD: %s", guesserSess.setupRaw)
+	}
+	// Verify Judge DOES know all forbidden words and keeps fast VAD.
 	for _, w := range []string{"apple", "banana", "lemon"} {
 		if !strings.Contains(judgeSess.setupRaw, w) {
 			t.Errorf("judge setup missing forbidden word %q: %s", w, judgeSess.setupRaw)
 		}
+	}
+	if !strings.Contains(judgeSess.setupRaw, `"END_SENSITIVITY_HIGH"`) || !strings.Contains(judgeSess.setupRaw, `"silenceDurationMs":100`) {
+		t.Errorf("judge setup missing 100ms high-sensitivity VAD: %s", judgeSess.setupRaw)
 	}
 
 	// Drain initial setupComplete forwarded from Guesser to browser.
@@ -151,10 +157,10 @@ func TestDoubleLivestreamJudgeAndGuesser(t *testing.T) {
 		t.Fatalf("read initial guesser message: %v", err)
 	}
 
-	// Browser sends a single voice packet -> BOTH Guesser and Judge must receive it.
+	// Browser sends a single 16kHz voice packet -> BOTH Guesser and Judge must receive it.
 	humanPCM := []byte{0x01, 0x02, 0x03, 0x04}
 	humanB64 := base64.StdEncoding.EncodeToString(humanPCM)
-	audioMsg := `{"audio":{"data":"` + humanB64 + `","mimeType":"audio/pcm"}}`
+	audioMsg := `{"audio":{"data":"` + humanB64 + `","mimeType":"audio/pcm;rate=16000"}}`
 	if err := browserConn.WriteMessage(websocket.TextMessage, []byte(audioMsg)); err != nil {
 		t.Fatalf("browser write audio: %v", err)
 	}
@@ -272,7 +278,7 @@ func TestDoubleLivestreamJudgeAndGuesser(t *testing.T) {
 		t.Errorf("unexpected second judge event: %+v", rec.JudgeEvents[1])
 	}
 
-	assertWAVFile(t, filepath.Join(gameDir, "human.wav"), 24000, humanPCM)
+	assertWAVFile(t, filepath.Join(gameDir, "human.wav"), 16000, humanPCM)
 	assertWAVFile(t, filepath.Join(gameDir, "guesser.wav"), 24000, guesserPCM)
 
 	eventsBytes, err := os.ReadFile(filepath.Join(gameDir, "events.jsonl"))

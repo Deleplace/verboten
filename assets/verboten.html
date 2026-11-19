@@ -107,18 +107,22 @@
             var audioChunksReceived = [];
             var audioChunksSent = [];
             var processor; // Audio processor.
+            var captureAudioContext;
             var mediaStream;
             var inputTimer; // Timer for input button.
             var humanSpeech = '';
             var modelSpeech = '';
             var gameEnded = false;
             var winTimeout = null;
+            var preludeTimer = null;
 
-            var sampleRate = 24000;
+            var inputSampleRate = 16000;
+            var outputSampleRate = 24000;
 
-            const audio = new Audio();
-            var audioQueue = [];
-            var isAudioPlaying = false;
+            var playbackContext = null;
+            var playbackGain = null;
+            var nextPlaybackTime = 0;
+            var activeAudioSources = [];
 
             function encodeAudio(audioChunks, sampleRate, bitDepth, numChannels) {
                 var audioData = mergeUint8Array(audioChunks);
@@ -166,8 +170,8 @@
                 return JSON.stringify(data);
             }
 
-            function createAudioContent(msg) {
-                data = { 'audio': { 'data': msg,  'mimeType': 'audio/pcm'  } };
+            function createAudioContent(msg, rate) {
+                data = { 'audio': { 'data': msg, 'mimeType': `audio/pcm;rate=${rate || inputSampleRate}` } };
                 return JSON.stringify(data);
             }
 
@@ -258,17 +262,14 @@
                         audioChunksReceived = []
                         return;
                     }
-                    if (!data.serverContent.modelTurn || !data.serverContent.modelTurn.parts || !data.serverContent.modelTurn.parts[0]) return;
-                    if (data.serverContent.modelTurn.parts[0].inlineData) {
-                        inlineData = data.serverContent.modelTurn.parts[0].inlineData;
-                        // console.debug('RECEIVED: ' + typeof (inlineData) + inlineData.mimeType + inlineData.data)
-                        if (inlineData.mimeType.startsWith('audio/pcm')) {
-                            const audioData = b64ToUint8Array(inlineData.data);
-                            audioQueue.push(audioData);
+                    if (!data.serverContent.modelTurn || !data.serverContent.modelTurn.parts) return;
+                    for (const part of data.serverContent.modelTurn.parts) {
+                        if (part && part.inlineData && part.inlineData.mimeType && part.inlineData.mimeType.startsWith('audio/pcm')) {
+                            const audioData = b64ToUint8Array(part.inlineData.data);
+                            const rate = parseSampleRate(part.inlineData.mimeType, outputSampleRate);
                             audioChunksReceived.push(audioData);
-                            playNextChunk();
+                            schedulePCMPlayback(audioData, rate);
                         }
-                        return;
                     }
                 }
                 ws.onerror = function (evt) {
@@ -277,9 +278,34 @@
                 return false;
             };
 
+            function isHeadphonesMode() {
+                const toggle = document.getElementById('headphones-mode');
+                return toggle ? toggle.checked : false;
+            }
+
+            function getAudioConstraints() {
+                if (isHeadphonesMode()) {
+                    return {
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        autoGainControl: false,
+                    };
+                }
+                return {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: false,
+                };
+            }
+
             function recordStop() {
                 if (processor) {
                     processor.disconnect(); // Disconnect processor
+                    processor = null;
+                }
+                if (captureAudioContext) {
+                    captureAudioContext.close().catch(() => {});
+                    captureAudioContext = null;
                 }
                 if (mediaStream) {
                     mediaStream.getTracks().forEach(track => track.stop());
@@ -295,11 +321,14 @@
 
             function recordAudio() {
                 console.debug('recordAudio()');
-                navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+                navigator.mediaDevices.getUserMedia({ audio: getAudioConstraints() }).then(stream => {
                     mediaStream = stream;
-                    const audioContext = new AudioContext({ sampleRate: sampleRate }); // Explicitly set sample rate.
-                    const source = audioContext.createMediaStreamSource(stream);
-                    processor = audioContext.createScriptProcessor(1024, 1, 1); // bufferSize, numInputChannels, numOutputChannels
+                    captureAudioContext = new AudioContext({ sampleRate: inputSampleRate });
+                    const actualRate = captureAudioContext.sampleRate;
+                    const source = captureAudioContext.createMediaStreamSource(stream);
+                    processor = captureAudioContext.createScriptProcessor(1024, 1, 1); // bufferSize, numInputChannels, numOutputChannels
+                    const silentGain = captureAudioContext.createGain();
+                    silentGain.gain.value = 0;
 
                     processor.onaudioprocess = (e) => {
                         const inputData = e.inputBuffer.getChannelData(0); // Raw PCM data
@@ -310,12 +339,13 @@
                             // console.debug('audioChunksSent.push()');
                             audioChunksSent.push(new Uint8Array(pcmData16.buffer))
                             const base64Data = arrayBufferToBase64(pcmData16.buffer);
-                            ws.send(createAudioContent(base64Data));
+                            ws.send(createAudioContent(base64Data, actualRate));
                         }
                     };
 
                     source.connect(processor);
-                    processor.connect(audioContext.destination); // Connect to output to hear audio during recording
+                    processor.connect(silentGain);
+                    silentGain.connect(captureAudioContext.destination);
                 });
             }
 
@@ -338,19 +368,68 @@
                 return int16Array;
             }
 
-            function playNextChunk() {
-                if (!isAudioPlaying && audioQueue.length > 0) {
-                    isAudioPlaying = true;
-                    const encodedAudio = encodeAudio(audioQueue, 24000, 16, 1);
-                    audioQueue = [];
-                    audio.src = URL.createObjectURL(encodedAudio);
-                    audio.onended = function () {
-                        isAudioPlaying = false;
-                        playNextChunk();
-                    }
-                    contestantSpeaking();
-                    audio.play();
+            function parseSampleRate(mimeType, fallbackRate) {
+                if (!mimeType) return fallbackRate;
+                const match = /rate=(\d+)/i.exec(mimeType);
+                if (match) {
+                    const parsed = parseInt(match[1], 10);
+                    if (parsed > 0) return parsed;
                 }
+                return fallbackRate;
+            }
+
+            function ensurePlaybackContext() {
+                if (!playbackContext) {
+                    playbackContext = new AudioContext({ sampleRate: outputSampleRate });
+                    playbackGain = playbackContext.createGain();
+                    playbackGain.gain.value = 0.55; // Moderate gain to reduce speaker-to-mic AEC ducking
+                    playbackGain.connect(playbackContext.destination);
+                    nextPlaybackTime = 0;
+                }
+                if (playbackContext.state === 'suspended') {
+                    playbackContext.resume();
+                }
+                return playbackContext;
+            }
+
+            function schedulePCMPlayback(pcmBytes, sampleRateHz) {
+                if (!pcmBytes || pcmBytes.byteLength < 2) {
+                    return;
+                }
+                const ctx = ensurePlaybackContext();
+                const sampleCount = Math.floor(pcmBytes.byteLength / 2);
+                const view = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, sampleCount * 2);
+                const floatSamples = new Float32Array(sampleCount);
+                for (let i = 0; i < sampleCount; i++) {
+                    floatSamples[i] = view.getInt16(i * 2, true) / 32768;
+                }
+                const audioBuffer = ctx.createBuffer(1, sampleCount, sampleRateHz);
+                audioBuffer.getChannelData(0).set(floatSamples);
+
+                const src = ctx.createBufferSource();
+                src.buffer = audioBuffer;
+                src.connect(playbackGain);
+
+                const now = ctx.currentTime;
+                const startAt = Math.max(now + 0.02, nextPlaybackTime);
+                nextPlaybackTime = startAt + audioBuffer.duration;
+                activeAudioSources.push(src);
+                src.onended = () => {
+                    const idx = activeAudioSources.indexOf(src);
+                    if (idx !== -1) activeAudioSources.splice(idx, 1);
+                };
+                contestantSpeaking();
+                src.start(startAt);
+            }
+
+            function stopPlayback() {
+                for (const src of activeAudioSources) {
+                    try {
+                        src.stop();
+                    } catch (e) {}
+                }
+                activeAudioSources = [];
+                nextPlaybackTime = 0;
             }
 
             function refereeSpeaking(waving) {
@@ -426,6 +505,10 @@
                         Français
                     </button>
                 </div>
+                <label class="mt-5 inline-flex items-center space-x-2 text-sm text-slate-400 cursor-pointer select-none">
+                    <input id="headphones-mode" type="checkbox" class="rounded bg-slate-700 border-slate-600 text-cyan-500 focus:ring-cyan-500">
+                    <span id="headphones-mode-label">Headphones mode (disable echo cancellation)</span>
+                </label>
             </div>
             
             <!-- Active Game State -->
@@ -484,7 +567,8 @@
                 modelGuessedWord: (word) => `The model guessed the word: "${word}"`,
                 goodJob: "Good job!",
                 microphoneUsage: "This game uses your microphone.",
-                dontSayTheseWords: "Don't say these words:"
+                dontSayTheseWords: "Don't say these words:",
+                headphonesMode: "Headphones mode (disable echo cancellation)"
             },
             fr: {
                 gameTitle: "Mots Prohibés",
@@ -505,7 +589,8 @@
                 modelGuessedWord: (word) => `Le modèle a deviné le mot: "${word}"`,
                 goodJob: "Bravo !",
                 microphoneUsage: "Ce jeu utilise votre microphone.",
-                dontSayTheseWords: "Ne dites pas ces mots :"
+                dontSayTheseWords: "Ne dites pas ces mots :",
+                headphonesMode: "Mode casque (désactiver l'annulation d'écho)"
             },
 
             es: {
@@ -551,6 +636,10 @@
             messageSubtitle.textContent = phrases[language].clickToStart;
             document.getElementById('microphone-usage').textContent = phrases[language].microphoneUsage;
             document.getElementById('dont-say-these-words').textContent = phrases[language].dontSayTheseWords;
+            const headphonesLabel = document.getElementById('headphones-mode-label');
+            if (headphonesLabel && phrases[language].headphonesMode) {
+                headphonesLabel.textContent = phrases[language].headphonesMode;
+            }
         }
 
         // Set initial text based on default language
@@ -678,6 +767,10 @@
                 clearTimeout(winTimeout);
                 winTimeout = null;
             }
+            if (preludeTimer) {
+                clearTimeout(preludeTimer);
+                preludeTimer = null;
+            }
             preludeFinished = false;
             startScreen.classList.add('hidden');
             mainWordContainer.innerHTML = '';
@@ -718,7 +811,11 @@
                                     if (contestantImg) {
                                         contestantImg.classList.remove('hidden');
                                     }
-                                    preludeFinished = true;
+                                    // Brief tail delay so the referee's final syllable doesn't leak into the mic stream.
+                                    preludeTimer = setTimeout(() => {
+                                        preludeFinished = true;
+                                        preludeTimer = null;
+                                    }, 250);
                                 };
                             }
                             refereeSpeak(word, false, callback);
@@ -763,11 +860,13 @@
                 clearTimeout(winTimeout);
                 winTimeout = null;
             }
+            if (preludeTimer) {
+                clearTimeout(preludeTimer);
+                preludeTimer = null;
+            }
             recordStop();
             if (!isWin) {
-                audioQueue = [];
-                audio.pause();
-                isAudioPlaying = false;
+                stopPlayback();
             }
             if (ws) {
                 ws.close();
@@ -811,9 +910,18 @@
         }
 
         // --- Event Listeners ---
+        const headphonesCheckbox = document.getElementById('headphones-mode');
+        if (headphonesCheckbox) {
+            headphonesCheckbox.checked = localStorage.getItem('verboten_headphones_mode') === 'true';
+            headphonesCheckbox.addEventListener('change', () => {
+                localStorage.setItem('verboten_headphones_mode', headphonesCheckbox.checked ? 'true' : 'false');
+            });
+        }
+
         function handleStartGameClick(language) {
+            ensurePlaybackContext();
             // Check for microphone permissions first
-            navigator.mediaDevices.getUserMedia({ audio: true })
+            navigator.mediaDevices.getUserMedia({ audio: getAudioConstraints() })
                 .then(stream => {
                     // Permissions granted, we can close the stream immediately
                     stream.getTracks().forEach(track => track.stop());

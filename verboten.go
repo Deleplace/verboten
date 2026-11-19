@@ -252,13 +252,25 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 	var loopsWG sync.WaitGroup
 	defer loopsWG.Wait()
 
-	var shortDuration int32 = 100
-	realtimeInputConfig := &genai.RealtimeInputConfig{
+	var (
+		prefixPaddingMs  int32 = 100
+		guesserSilenceMs int32 = 500
+		judgeSilenceMs   int32 = 100
+	)
+	guesserRealtimeInputConfig := &genai.RealtimeInputConfig{
 		AutomaticActivityDetection: &genai.AutomaticActivityDetection{
-			StartOfSpeechSensitivity: "START_SENSITIVITY_HIGH",
-			EndOfSpeechSensitivity:   "END_SENSITIVITY_HIGH",
-			PrefixPaddingMs:          &shortDuration,
-			SilenceDurationMs:        &shortDuration,
+			StartOfSpeechSensitivity: genai.StartSensitivityHigh,
+			EndOfSpeechSensitivity:   genai.EndSensitivityLow,
+			PrefixPaddingMs:          &prefixPaddingMs,
+			SilenceDurationMs:        &guesserSilenceMs,
+		},
+	}
+	judgeRealtimeInputConfig := &genai.RealtimeInputConfig{
+		AutomaticActivityDetection: &genai.AutomaticActivityDetection{
+			StartOfSpeechSensitivity: genai.StartSensitivityHigh,
+			EndOfSpeechSensitivity:   genai.EndSensitivityHigh,
+			PrefixPaddingMs:          &prefixPaddingMs,
+			SilenceDurationMs:        &judgeSilenceMs,
 		},
 	}
 
@@ -290,7 +302,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 		ResponseModalities:       []genai.Modality{genai.ModalityAudio},
 		InputAudioTranscription:  audioTranscriptionConfig,
 		OutputAudioTranscription: audioTranscriptionConfig,
-		RealtimeInputConfig:      realtimeInputConfig,
+		RealtimeInputConfig:      guesserRealtimeInputConfig,
 	}
 
 	// Gemini Live session 2 (Judge): listens to the same human voice stream, knows the
@@ -305,7 +317,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 			LanguageCode: languageCode,
 		},
 		ResponseModalities:  []genai.Modality{genai.ModalityAudio},
-		RealtimeInputConfig: realtimeInputConfig,
+		RealtimeInputConfig: judgeRealtimeInputConfig,
 		Tools: []*genai.Tool{
 			{
 				FunctionDeclarations: []*genai.FunctionDeclaration{
