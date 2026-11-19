@@ -207,8 +207,12 @@
                     return false;
                 }
                 const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                const forbiddenParams = allForbiddenWords.map(word => `forbidden=${encodeURIComponent(word)}`).join('&');
-                ws = new WebSocket(`${protocol}//${window.location.host}/live/${lang}?${forbiddenParams}`);
+                const params = new URLSearchParams();
+                params.set('target', targetWord.word);
+                for (const word of allForbiddenWords) {
+                    params.append('forbidden', word);
+                }
+                ws = new WebSocket(`${protocol}//${window.location.host}/live/${lang}?${params.toString()}`);
                 ws.onopen = function (evt) {
                     console.debug('OPEN');
                 }
@@ -476,7 +480,7 @@
                 micRequired: "Microphone access is required to play. Please allow it and try again.",
                 youSaidForbidden: (word) => `You said the proscribed word: "${word}"`,
                 youSaidTooClose: (spoken, forbidden) => `You said "${spoken}", which is too close to the proscribed word "${forbidden}"`,
-                youSaidTranslation: (spoken, forbidden) => `You said "${spoken}", which is a translation of the proscribed word "${forbidden}"`,
+                youSaidTranslation: (spoken, forbidden) => `You said "${spoken}", which is a translation of the target word "${forbidden}"`,
                 modelGuessedWord: (word) => `The model guessed the word: "${word}"`,
                 goodJob: "Good job!",
                 microphoneUsage: "This game uses your microphone.",
@@ -497,7 +501,7 @@
                 micRequired: "L'accès au microphone est requis pour jouer. Veuillez l'autoriser et réessayer.",
                 youSaidForbidden: (word) => `Vous avez dit le mot prohibé: "${word}"`,
                 youSaidTooClose: (spoken, forbidden) => `Vous avez dit "${spoken}", qui est trop proche du mot prohibé "${forbidden}"`,
-                youSaidTranslation: (spoken, forbidden) => `Vous avez dit "${spoken}", qui est une traduction du mot prohibé "${forbidden}"`,
+                youSaidTranslation: (spoken, forbidden) => `Vous avez dit "${spoken}", qui est une traduction du mot à deviner "${forbidden}"`,
                 modelGuessedWord: (word) => `Le modèle a deviné le mot: "${word}"`,
                 goodJob: "Bravo !",
                 microphoneUsage: "Ce jeu utilise votre microphone.",

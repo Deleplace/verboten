@@ -90,7 +90,7 @@ func TestDoubleLivestreamJudgeAndGuesser(t *testing.T) {
 	defer appServer.Close()
 
 	browserURL := "ws://" + strings.TrimPrefix(appServer.URL, "http://") +
-		"/live/en?forbidden=apple&forbidden=banana&forbidden=lemon"
+		"/live/en?target=lemon&forbidden=lemon&forbidden=apple&forbidden=banana"
 	browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, nil)
 	if err != nil {
 		t.Fatalf("dial liveGame: %v", err)
@@ -175,7 +175,22 @@ func TestDoubleLivestreamJudgeAndGuesser(t *testing.T) {
 		t.Fatalf("expected guesser reply to reach browser, got: %s", gotGuesserBytes)
 	}
 
-	// Judge detects utterance of an exact translation of a forbidden word ("citron" -> "lemon") via tool call!
+	// If Judge mistakenly reports a translation of a NON-target forbidden word ("pomme" -> "apple"),
+	// the server must ignore it and send a toolResponse so Judge keeps listening.
+	nonTargetTranslationCall := `{"toolCall":{"functionCalls":[{"id":"call-0","name":"declare_loss","args":{"forbidden_word":"apple","spoken_word":"pomme","reason":"translation"}}]}}`
+	if err := judgeSess.conn.WriteMessage(websocket.TextMessage, []byte(nonTargetTranslationCall)); err != nil {
+		t.Fatalf("judge write non-target toolCall: %v", err)
+	}
+	select {
+	case resp := <-judgeSess.audioPackets:
+		if !strings.Contains(resp, "toolResponse") || !strings.Contains(resp, "call-0") {
+			t.Fatalf("expected toolResponse for ignored non-target translation, got: %s", resp)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for toolResponse to judge on ignored non-target translation")
+	}
+
+	// Judge detects utterance of an exact translation of the TARGET word ("citron" -> "lemon") via tool call!
 	judgeToolCall := `{"toolCall":{"functionCalls":[{"id":"call-1","name":"declare_loss","args":{"forbidden_word":"lemon","spoken_word":"citron","reason":"translation"}}]}}`
 	if err := judgeSess.conn.WriteMessage(websocket.TextMessage, []byte(judgeToolCall)); err != nil {
 		t.Fatalf("judge write toolCall: %v", err)
@@ -258,7 +273,7 @@ func TestFrenchLanguageConfiguration(t *testing.T) {
 			defer appServer.Close()
 
 			browserURL := "ws://" + strings.TrimPrefix(appServer.URL, "http://") +
-				"/live/fr?forbidden=Fromage&forbidden=P%C3%A2te"
+				"/live/fr?target=Pizza&forbidden=Pizza&forbidden=Fromage&forbidden=P%C3%A2te"
 			browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, nil)
 			if err != nil {
 				t.Fatalf("dial liveGame: %v", err)
@@ -282,8 +297,14 @@ func TestFrenchLanguageConfiguration(t *testing.T) {
 					if !strings.Contains(setup, "Expect French spoken input") {
 						t.Errorf("judge setup missing French spoken input instruction: %s", setup)
 					}
-					if !strings.Contains(setup, "EXACT TRANSLATION IN ANOTHER LANGUAGE") {
-						t.Errorf("judge setup missing exact translation loss rule: %s", setup)
+					if !strings.Contains(setup, "EXACT TRANSLATION OF THE TARGET WORD IN ANOTHER LANGUAGE") {
+						t.Errorf("judge setup missing target-word exact translation loss rule: %s", setup)
+					}
+					if !strings.Contains(setup, "Target word to guess: Pizza") {
+						t.Errorf("judge setup missing target word: %s", setup)
+					}
+					if !strings.Contains(setup, "Do NOT check or penalize translations in other languages for the other forbidden words (Fromage, Pâte)") {
+						t.Errorf("judge setup missing exclusion of other forbidden words from translation checks: %s", setup)
 					}
 					if !strings.Contains(setup, `"translation"`) {
 						t.Errorf("judge setup missing translation reason enum in tool declaration: %s", setup)
