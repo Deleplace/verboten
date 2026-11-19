@@ -220,7 +220,7 @@
                     data = JSON.parse(evt.data);
                     if (data.judge && data.judge.lost) {
                         console.log('Judge declared loss:', data.judge);
-                        endGame(false, formatJudgeLossMessage(data.judge.spokenWord, data.judge.forbiddenWord));
+                        endGame(false, formatJudgeLossMessage(data.judge.spokenWord, data.judge.forbiddenWord, data.judge.reason));
                         return;
                     }
                     if (!data.serverContent) return;
@@ -476,6 +476,7 @@
                 micRequired: "Microphone access is required to play. Please allow it and try again.",
                 youSaidForbidden: (word) => `You said the proscribed word: "${word}"`,
                 youSaidTooClose: (spoken, forbidden) => `You said "${spoken}", which is too close to the proscribed word "${forbidden}"`,
+                youSaidTranslation: (spoken, forbidden) => `You said "${spoken}", which is a translation of the proscribed word "${forbidden}"`,
                 modelGuessedWord: (word) => `The model guessed the word: "${word}"`,
                 goodJob: "Good job!",
                 microphoneUsage: "This game uses your microphone.",
@@ -496,6 +497,7 @@
                 micRequired: "L'accès au microphone est requis pour jouer. Veuillez l'autoriser et réessayer.",
                 youSaidForbidden: (word) => `Vous avez dit le mot prohibé: "${word}"`,
                 youSaidTooClose: (spoken, forbidden) => `Vous avez dit "${spoken}", qui est trop proche du mot prohibé "${forbidden}"`,
+                youSaidTranslation: (spoken, forbidden) => `Vous avez dit "${spoken}", qui est une traduction du mot prohibé "${forbidden}"`,
                 modelGuessedWord: (word) => `Le modèle a deviné le mot: "${word}"`,
                 goodJob: "Bravo !",
                 microphoneUsage: "Ce jeu utilise votre microphone.",
@@ -648,10 +650,13 @@
                 .toLowerCase();
         }
 
-        function formatJudgeLossMessage(spokenWord, forbiddenWord) {
+        function formatJudgeLossMessage(spokenWord, forbiddenWord, reason) {
             const langPhrases = phrases[currentLanguage] || phrases.en;
             if (!spokenWord || !forbiddenWord) {
                 return langPhrases.youSaidForbidden(forbiddenWord || spokenWord || '');
+            }
+            if (reason === 'translation' && langPhrases.youSaidTranslation) {
+                return langPhrases.youSaidTranslation(spokenWord, forbiddenWord);
             }
             if (normalizeWord(spokenWord) === normalizeWord(forbiddenWord) || !langPhrases.youSaidTooClose) {
                 return langPhrases.youSaidForbidden(forbiddenWord);

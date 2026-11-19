@@ -175,8 +175,8 @@ func TestDoubleLivestreamJudgeAndGuesser(t *testing.T) {
 		t.Fatalf("expected guesser reply to reach browser, got: %s", gotGuesserBytes)
 	}
 
-	// Judge detects utterance of a resembling forbidden word ("lemons" ~ "lemon") via tool call!
-	judgeToolCall := `{"toolCall":{"functionCalls":[{"id":"call-1","name":"declare_loss","args":{"forbidden_word":"lemon","spoken_word":"lemons"}}]}}`
+	// Judge detects utterance of an exact translation of a forbidden word ("citron" -> "lemon") via tool call!
+	judgeToolCall := `{"toolCall":{"functionCalls":[{"id":"call-1","name":"declare_loss","args":{"forbidden_word":"lemon","spoken_word":"citron","reason":"translation"}}]}}`
 	if err := judgeSess.conn.WriteMessage(websocket.TextMessage, []byte(judgeToolCall)); err != nil {
 		t.Fatalf("judge write toolCall: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestDoubleLivestreamJudgeAndGuesser(t *testing.T) {
 	if err := json.Unmarshal(gotJudgeBytes, &msg); err != nil {
 		t.Fatalf("unmarshal judge verdict: %v (%s)", err, gotJudgeBytes)
 	}
-	if msg.Judge == nil || !msg.Judge.Lost || msg.Judge.ForbiddenWord != "lemon" || msg.Judge.SpokenWord != "lemons" {
+	if msg.Judge == nil || !msg.Judge.Lost || msg.Judge.ForbiddenWord != "lemon" || msg.Judge.SpokenWord != "citron" || msg.Judge.Reason != "translation" {
 		t.Fatalf("unexpected judge verdict: %+v", msg.Judge)
 	}
 }
@@ -279,8 +279,14 @@ func TestFrenchLanguageConfiguration(t *testing.T) {
 				}
 				isJudge := strings.Contains(setup, declareLossFuncName)
 				if isJudge {
-					if !strings.Contains(setup, "expect French spoken input") {
+					if !strings.Contains(setup, "Expect French spoken input") {
 						t.Errorf("judge setup missing French spoken input instruction: %s", setup)
+					}
+					if !strings.Contains(setup, "EXACT TRANSLATION IN ANOTHER LANGUAGE") {
+						t.Errorf("judge setup missing exact translation loss rule: %s", setup)
+					}
+					if !strings.Contains(setup, `"translation"`) {
+						t.Errorf("judge setup missing translation reason enum in tool declaration: %s", setup)
 					}
 				} else {
 					if !strings.Contains(setup, "entendre du français en entrée audio") {

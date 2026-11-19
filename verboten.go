@@ -110,24 +110,43 @@ type judgeVerdict struct {
 	Lost          bool   `json:"lost"`
 	ForbiddenWord string `json:"forbiddenWord,omitempty"`
 	SpokenWord    string `json:"spokenWord,omitempty"`
+	Reason        string `json:"reason,omitempty"`
 }
 
 func judgeSystemInstruction(langName, languageCode string, forbiddenWords []string) string {
-	return fmt.Sprintf(`You are the Judge in a live voice game of "Verboten" (Proscribed Words), played in %s (%s).
-The human player is speaking in %s into their microphone to describe a secret word to an AI guesser; expect %s spoken input.
+	return fmt.Sprintf(`You are the strict Judge in a live voice game of "Verboten" (Proscribed Words), played in %s (%s).
+You are listening directly to the human player's microphone as they describe a secret word to an AI guesser.
+Expect %s spoken input most of the time, but stay strictly alert for words spoken in ANY other language (English, French, Spanish, German, Italian, Portuguese, Dutch, Arabic, etc.), because translating a forbidden word into another language is an automatic loss.
 
 Here are the forbidden words: %s.
 
-Rules:
-1. If the human player says ANY of these forbidden words, or a very resembling word (such as a plural, feminine, verb conjugation, derivative, compound, or word sharing the same root/stem), or tries to cheat by translating any of these forbidden words into another language, immediately interrupt the game and declare the game is lost by calling %s.
-2. Synonyms, descriptions, or semantically related words in %s that do NOT sound like and do NOT share the same root as any forbidden word are allowed (for example, saying "mozzarella" when "Cheese" is forbidden, or "ficelle" when "Corde" is forbidden, is valid and must NOT end the game).
-3. Do NOT call %s on background noise or hesitation sounds unless you clearly hear a forbidden or very resembling word.
-4. If the human player has NOT said any forbidden or very resembling word, do NOT call %s; simply reply "OK" and keep listening.`,
+STRICT LOSS CONDITIONS — You MUST immediately interrupt the game and call %s if the human player pronounces ANY of the following:
+1. EXACT FORBIDDEN WORD (reason="exact"): Any word from the forbidden list above.
+2. VERY RESEMBLING WORD (reason="resembling"): Any inflection, plural, feminine, verb conjugation, derivative, compound, or word sharing the same root/stem as a forbidden word (e.g., "poussent" for "Pousser", "cheesy" for "Cheese", "arbres" for "Arbre").
+3. EXACT TRANSLATION IN ANOTHER LANGUAGE (reason="translation"): Any word that is the exact translation of ANY forbidden word in ANY other language — whether intentional or accidental, whether spoken alone or inside a %s sentence, and including plurals or inflections of that translation!
+   Examples of FORBIDDEN exact translations (MUST immediately call %s with reason="translation"):
+   - Forbidden "Fromage" -> player says "cheese", "queso", "Käse", "formaggio" -> LOST!
+   - Forbidden "Eau" -> player says "water", "agua", "Wasser", "acqua" -> LOST!
+   - Forbidden "Jaune" -> player says "yellow", "amarillo", "gelb", "giallo" -> LOST!
+   - Forbidden "Arbre" -> player says "tree", "trees", "árbol", "Baum", "albero" -> LOST!
+   - Forbidden "Chapeau" -> player says "hat", "sombrero", "Hut", "cappello" -> LOST!
+   - Forbidden "Cheese" -> player says "fromage", "queso", "Käse", "formaggio" -> LOST!
+   - Forbidden "Moon" -> player says "lune", "luna", "Mond" -> LOST!
+
+ALLOWED (do NOT call %s):
+- Same-language synonyms, descriptions, or semantically related words in %s that do NOT share the same root as any forbidden word AND are NOT an exact translation of any forbidden word in another language (for example, saying "mozzarella" when "Cheese" is forbidden, "ficelle" when "Corde" is forbidden, or "tronc" when "Arbre" is forbidden, is valid and must NOT end the game).
+- Unclear background noise or hesitation sounds ("um", "euh") unless a forbidden word, resembling word, or exact translation in another language was clearly spoken.
+
+RESPONSE BEHAVIOR:
+- If the human player violates condition 1, 2, or 3 (exact forbidden word, very resembling word, OR exact translation in another language), IMMEDIATELY call %s with forbidden_word, spoken_word, and reason.
+- Only if NONE of conditions 1, 2, or 3 were violated, do NOT call %s; simply reply "OK" and keep listening.`,
 		langName,
 		languageCode,
 		langName,
-		langName,
 		strings.Join(forbiddenWords, ", "),
+		declareLossFuncName,
+		langName,
+		declareLossFuncName,
 		declareLossFuncName,
 		langName,
 		declareLossFuncName,
@@ -238,20 +257,25 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 				FunctionDeclarations: []*genai.FunctionDeclaration{
 					{
 						Name:        declareLossFuncName,
-						Description: "Interrupt the game and declare the game is lost when the human player utters one of the forbidden words, a very resembling word (same root/inflection), or its translation.",
+						Description: "Interrupt the game and declare the game is lost when the human player utters a forbidden word, a very resembling word (same root/inflection), or the exact translation of a forbidden word in another language.",
 						Parameters: &genai.Schema{
 							Type: genai.TypeObject,
 							Properties: map[string]*genai.Schema{
 								"forbidden_word": {
 									Type:        genai.TypeString,
-									Description: "The word from the forbidden list that was violated.",
+									Description: "The exact word from the forbidden list that was violated.",
 								},
 								"spoken_word": {
 									Type:        genai.TypeString,
-									Description: "The word or phrase spoken by the human player that triggered the loss.",
+									Description: "The word or phrase spoken by the human player (in any language) that triggered the loss.",
+								},
+								"reason": {
+									Type:        genai.TypeString,
+									Enum:        []string{"exact", "resembling", "translation"},
+									Description: "Why the game is lost: 'exact' for a forbidden word itself, 'resembling' for an inflection or same-root word, or 'translation' for the exact translation of a forbidden word in another language.",
 								},
 							},
-							Required: []string{"forbidden_word", "spoken_word"},
+							Required: []string{"forbidden_word", "spoken_word", "reason"},
 						},
 					},
 				},
@@ -352,15 +376,21 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 					if fc.Name == declareLossFuncName {
 						forbiddenWord, _ := fc.Args["forbidden_word"].(string)
 						spokenWord, _ := fc.Args["spoken_word"].(string)
+						reason, _ := fc.Args["reason"].(string)
 						if !gameOver.CompareAndSwap(false, true) {
 							return
 						}
-						log.Printf("Game %s Judge declared loss: spoken=%q forbidden=%q", gameID, spokenWord, forbiddenWord)
+						if reason != "" {
+							log.Printf("Game %s Judge declared loss (%s): spoken=%q forbidden=%q", gameID, reason, spokenWord, forbiddenWord)
+						} else {
+							log.Printf("Game %s Judge declared loss: spoken=%q forbidden=%q", gameID, spokenWord, forbiddenWord)
+						}
 						verdictBytes, err := json.Marshal(judgeMessage{
 							Judge: &judgeVerdict{
 								Lost:          true,
 								ForbiddenWord: forbiddenWord,
 								SpokenWord:    spokenWord,
+								Reason:        reason,
 							},
 						})
 						if err != nil {
