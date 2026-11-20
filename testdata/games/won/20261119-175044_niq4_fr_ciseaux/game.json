@@ -1,0 +1,53 @@
+{
+  "game_id": "niQ4",
+  "language": "fr",
+  "language_code": "fr-FR",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-19T17:50:44.442516Z",
+  "ended_at": "2026-11-19T17:50:51.848738Z",
+  "duration_ms": 7406,
+  "target_word": "Ciseaux",
+  "forbidden_words": [
+    "Couper",
+    "Papier",
+    "Tranchant",
+    "Lames"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3174,
+    "last_packet_ms": 7393,
+    "packet_count": 67,
+    "total_bytes": 137216,
+    "audio_duration_ms": 4288
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 6202,
+    "last_packet_ms": 6417,
+    "packet_count": 6,
+    "total_bytes": 38882,
+    "audio_duration_ms": 810
+  },
+  "transcripts": [
+    {
+      "offset_ms": 6135,
+      "speaker": "human",
+      "text": "Ah bah, il faut pas courir avec."
+    },
+    {
+      "offset_ms": 6202,
+      "speaker": "guesser",
+      "text": "Ciseaux ?"
+    }
+  ],
+  "judge_events": []
+}

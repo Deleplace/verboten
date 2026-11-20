@@ -1,0 +1,44 @@
+{
+  "game_id": "hoVV",
+  "language": "fr",
+  "language_code": "fr-FR",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-19T17:50:58.22281Z",
+  "ended_at": "2026-11-19T17:51:09.16726Z",
+  "duration_ms": 10944,
+  "target_word": "Horloge",
+  "forbidden_words": [
+    "Temps",
+    "Montre",
+    "Tic-tac",
+    "Chiffres"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3388,
+    "last_packet_ms": 10896,
+    "packet_count": 118,
+    "total_bytes": 241664,
+    "audio_duration_ms": 7552
+  },
+  "guesser_audio": {
+    "packet_count": 0,
+    "total_bytes": 0,
+    "audio_duration_ms": 0
+  },
+  "transcripts": [],
+  "judge_events": [
+    {
+      "offset_ms": 10943,
+      "timestamp": "2026-11-19T17:51:09.165814Z",
+      "action": "declare_loss",
+      "spoken_word": "clock",
+      "forbidden_word": "Horloge",
+      "reason": "translation"
+    }
+  ]
+}

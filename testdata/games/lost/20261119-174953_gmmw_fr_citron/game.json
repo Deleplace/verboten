@@ -1,0 +1,44 @@
+{
+  "game_id": "gMmw",
+  "language": "fr",
+  "language_code": "fr-FR",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-19T17:49:53.431721Z",
+  "ended_at": "2026-11-19T17:50:03.403856Z",
+  "duration_ms": 9972,
+  "target_word": "Citron",
+  "forbidden_words": [
+    "Acide",
+    "Jaune",
+    "Fruit",
+    "Agrume"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3338,
+    "last_packet_ms": 9936,
+    "packet_count": 104,
+    "total_bytes": 212992,
+    "audio_duration_ms": 6656
+  },
+  "guesser_audio": {
+    "packet_count": 0,
+    "total_bytes": 0,
+    "audio_duration_ms": 0
+  },
+  "transcripts": [],
+  "judge_events": [
+    {
+      "offset_ms": 9970,
+      "timestamp": "2026-11-19T17:50:03.402503Z",
+      "action": "declare_loss",
+      "spoken_word": "lemon",
+      "forbidden_word": "citron",
+      "reason": "translation"
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "game_id": "H75H",
+  "language": "fr",
+  "language_code": "fr-FR",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-19T17:43:35.438698Z",
+  "ended_at": "2026-11-19T17:43:44.416505Z",
+  "duration_ms": 8977,
+  "target_word": "Guitare",
+  "forbidden_words": [
+    "Cordes",
+    "Musique",
+    "Instrument",
+    "Jouer"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3124,
+    "last_packet_ms": 8947,
+    "packet_count": 92,
+    "total_bytes": 188416,
+    "audio_duration_ms": 5888
+  },
+  "guesser_audio": {
+    "packet_count": 0,
+    "total_bytes": 0,
+    "audio_duration_ms": 0
+  },
+  "transcripts": [],
+  "judge_events": [
+    {
+      "offset_ms": 8975,
+      "timestamp": "2026-11-19T17:43:44.414592Z",
+      "action": "declare_loss",
+      "spoken_word": "joue",
+      "forbidden_word": "Jouer",
+      "reason": "resembling"
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "game_id": "Chnl",
+  "language": "fr",
+  "language_code": "fr-FR",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-19T17:51:17.351852Z",
+  "ended_at": "2026-11-19T17:51:26.282275Z",
+  "duration_ms": 8930,
+  "target_word": "Dragon",
+  "forbidden_words": [
+    "Mythe",
+    "Feu",
+    "Voler",
+    "Bête"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3240,
+    "last_packet_ms": 8871,
+    "packet_count": 89,
+    "total_bytes": 182272,
+    "audio_duration_ms": 5696
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 7726,
+    "last_packet_ms": 7914,
+    "packet_count": 6,
+    "total_bytes": 39870,
+    "audio_duration_ms": 830
+  },
+  "transcripts": [
+    {
+      "offset_ms": 7725,
+      "speaker": "human",
+      "text": "Alors, c'est un animal qui crache des flammes."
+    },
+    {
+      "offset_ms": 7726,
+      "speaker": "guesser",
+      "text": "Dragon"
+    }
+  ],
+  "judge_events": []
+}

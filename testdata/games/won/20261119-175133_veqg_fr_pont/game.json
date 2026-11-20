@@ -1,0 +1,53 @@
+{
+  "game_id": "vEQg",
+  "language": "fr",
+  "language_code": "fr-FR",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-19T17:51:33.495164Z",
+  "ended_at": "2026-11-19T17:51:43.36094Z",
+  "duration_ms": 9865,
+  "target_word": "Pont",
+  "forbidden_words": [
+    "Rivière",
+    "Traverser",
+    "Structure",
+    "Route"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3281,
+    "last_packet_ms": 9825,
+    "packet_count": 103,
+    "total_bytes": 210944,
+    "audio_duration_ms": 6592
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 8661,
+    "last_packet_ms": 8820,
+    "packet_count": 5,
+    "total_bytes": 24482,
+    "audio_duration_ms": 510
+  },
+  "transcripts": [
+    {
+      "offset_ms": 8636,
+      "speaker": "human",
+      "text": "Oh bah, c'est le truc en pierre pour passer au-dessus de la flotte."
+    },
+    {
+      "offset_ms": 8661,
+      "speaker": "guesser",
+      "text": "Pont?"
+    }
+  ],
+  "judge_events": []
+}

@@ -1,0 +1,83 @@
+{
+  "game_id": "PMVK",
+  "language": "fr",
+  "language_code": "fr-FR",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-19T17:50:15.037441Z",
+  "ended_at": "2026-11-19T17:50:37.748452Z",
+  "duration_ms": 22711,
+  "target_word": "Voiture",
+  "forbidden_words": [
+    "Roue",
+    "Conduire",
+    "Route",
+    "Moteur"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3388,
+    "last_packet_ms": 22679,
+    "packet_count": 302,
+    "total_bytes": 618496,
+    "audio_duration_ms": 19328
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 7748,
+    "last_packet_ms": 21759,
+    "packet_count": 28,
+    "total_bytes": 188676,
+    "audio_duration_ms": 3930
+  },
+  "transcripts": [
+    {
+      "offset_ms": 7747,
+      "speaker": "human",
+      "text": "Bah, c'est un camion personnel pour quatre personnes."
+    },
+    {
+      "offset_ms": 7748,
+      "speaker": "guesser",
+      "text": "Pick-up"
+    },
+    {
+      "offset_ms": 12719,
+      "speaker": "human",
+      "text": "Non, plus le personnel."
+    },
+    {
+      "offset_ms": 12721,
+      "speaker": "guesser",
+      "text": "Monospace"
+    },
+    {
+      "offset_ms": 17082,
+      "speaker": "human",
+      "text": "encore plus petit"
+    },
+    {
+      "offset_ms": 17082,
+      "speaker": "guesser",
+      "text": "Citadine"
+    },
+    {
+      "offset_ms": 21462,
+      "speaker": "human",
+      "text": "Oui, alors c'est quoi le terme générique pour ça ?"
+    },
+    {
+      "offset_ms": 21506,
+      "speaker": "guesser",
+      "text": "Voiture"
+    }
+  ],
+  "judge_events": []
+}
