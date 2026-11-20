@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -433,5 +434,266 @@ func TestFrenchLanguageConfiguration(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDecisionSameRootWireFormat(t *testing.T) {
+	var (
+		gotPath string
+		gotBody string
+	)
+	fakeDecisionServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"answers":{"same_root":{"type":"noul","noul":0.12,"confidence":0.88}}}`))
+	}))
+	defer fakeDecisionServer.Close()
+
+	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+		APIKey:  "test-api-key",
+		Backend: genai.BackendGeminiAPI,
+		HTTPOptions: genai.HTTPOptions{
+			BaseURL:    fakeDecisionServer.URL + "/",
+			APIVersion: "v1beta",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	server := NewServer(client)
+	prob, err := server.sameRootProbability(context.Background(), "fr", "flamme", "feu")
+	if err != nil {
+		t.Fatalf("sameRootProbability: %v", err)
+	}
+	if prob != 0.12 {
+		t.Fatalf("prob = %v, want 0.12", prob)
+	}
+	if gotPath != "/v1beta/decisions" {
+		t.Errorf("request path = %q, want %q", gotPath, "/v1beta/decisions")
+	}
+	wantQuestion := "Le mot 'flamme' est-il trop proche du mot 'feu' pour le jeu des mots prohibés, car ayant la même racine?"
+	if !strings.Contains(gotBody, `"model":"gemini-decision-1"`) {
+		t.Errorf("request body missing model gemini-decision-1: %s", gotBody)
+	}
+	if !strings.Contains(gotBody, `"type":"noul"`) {
+		t.Errorf("request body missing noul question type: %s", gotBody)
+	}
+	if !strings.Contains(gotBody, wantQuestion) {
+		t.Errorf("request body missing expected French question %q: %s", wantQuestion, gotBody)
+	}
+}
+
+func TestDecisionSameRootFilteringInLiveGame(t *testing.T) {
+	type capturedSession struct {
+		isJudge  bool
+		incoming chan string
+		conn     *websocket.Conn
+	}
+
+	var (
+		mu       sync.Mutex
+		sessions []*capturedSession
+		bothUp   = make(chan struct{})
+	)
+
+	fakeGemini := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("fake gemini upgrade: %v", err)
+			return
+		}
+		_, setupBytes, err := c.ReadMessage()
+		if err != nil {
+			c.Close()
+			return
+		}
+		sess := &capturedSession{
+			isJudge:  strings.Contains(string(setupBytes), declareLossFuncName),
+			incoming: make(chan string, 10),
+			conn:     c,
+		}
+		_ = c.WriteMessage(websocket.TextMessage, []byte(`{"setupComplete":{}}`))
+
+		mu.Lock()
+		sessions = append(sessions, sess)
+		if len(sessions) == 2 {
+			close(bothUp)
+		}
+		mu.Unlock()
+
+		for {
+			_, msg, err := c.ReadMessage()
+			if err != nil {
+				return
+			}
+			sess.incoming <- string(msg)
+		}
+	}))
+	defer fakeGemini.Close()
+
+	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+		APIKey:  "test-api-key",
+		Backend: genai.BackendGeminiAPI,
+		HTTPOptions: genai.HTTPOptions{
+			BaseURL:    "ws://" + strings.TrimPrefix(fakeGemini.URL, "http://"),
+			APIVersion: "v1beta",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	recordingsDir := t.TempDir()
+	gameServer := NewServer(client)
+	gameServer.RecordingsDir = recordingsDir
+	gameServer.sameRootProbFunc = func(ctx context.Context, lang, spoken, forbidden string) (float64, error) {
+		switch normalizeWord(spoken) + ":" + normalizeWord(forbidden) {
+		case "flamme:feu":
+			return 0.12, nil
+		case "grand:flamme":
+			return 0.02, nil
+		case "porte:porter":
+			return 0.94, nil
+		default:
+			return 0.0, nil
+		}
+	}
+
+	handlerDone := make(chan struct{})
+	appServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(handlerDone)
+		gameServer.liveGame(w, r)
+	}))
+	defer appServer.Close()
+
+	browserURL := "ws://" + strings.TrimPrefix(appServer.URL, "http://") +
+		"/live/fr?target=Dragon&forbidden=Dragon&forbidden=Feu&forbidden=Porter"
+	browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, nil)
+	if err != nil {
+		t.Fatalf("dial liveGame: %v", err)
+	}
+	defer browserConn.Close()
+
+	select {
+	case <-bothUp:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for both sessions")
+	}
+
+	mu.Lock()
+	var judgeSess, guesserSess *capturedSession
+	for _, s := range sessions {
+		if s.isJudge {
+			judgeSess = s
+		} else {
+			guesserSess = s
+		}
+	}
+	mu.Unlock()
+	defer judgeSess.conn.Close()
+	defer guesserSess.conn.Close()
+
+	// Drain initial setupComplete.
+	_ = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := browserConn.ReadMessage(); err != nil {
+		t.Fatalf("read setupComplete: %v", err)
+	}
+
+	// 1. Judge falsely flags "flamme" vs "Feu" (Decision 1 returns 0.12 < 0.75) -> must be ignored.
+	call1 := `{"toolCall":{"functionCalls":[{"id":"c1","name":"declare_loss","args":{"forbidden_word":"Feu","spoken_word":"flamme","reason":"resembling"}}]}}`
+	if err := judgeSess.conn.WriteMessage(websocket.TextMessage, []byte(call1)); err != nil {
+		t.Fatalf("write call1: %v", err)
+	}
+	select {
+	case resp := <-judgeSess.incoming:
+		if !strings.Contains(resp, "toolResponse") || !strings.Contains(resp, "c1") {
+			t.Fatalf("expected toolResponse for rejected flamme/Feu, got: %s", resp)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for toolResponse for flamme/Feu")
+	}
+
+	// 2. Judge falsely flags "Grand" vs "flamme" (Decision 1 returns 0.02 < 0.75) -> must be ignored.
+	call2 := `{"toolCall":{"functionCalls":[{"id":"c2","name":"declare_loss","args":{"forbidden_word":"flamme","spoken_word":"Grand","reason":"resembling"}}]}}`
+	if err := judgeSess.conn.WriteMessage(websocket.TextMessage, []byte(call2)); err != nil {
+		t.Fatalf("write call2: %v", err)
+	}
+	select {
+	case resp := <-judgeSess.incoming:
+		if !strings.Contains(resp, "toolResponse") || !strings.Contains(resp, "c2") {
+			t.Fatalf("expected toolResponse for rejected Grand/flamme, got: %s", resp)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for toolResponse for Grand/flamme")
+	}
+
+	// 3. Judge flags "porte" vs "Porter" (Decision 1 returns 0.94 >= 0.75) -> must end the game!
+	call3 := `{"toolCall":{"functionCalls":[{"id":"c3","name":"declare_loss","args":{"forbidden_word":"Porter","spoken_word":"porte","reason":"resembling"}}]}}`
+	if err := judgeSess.conn.WriteMessage(websocket.TextMessage, []byte(call3)); err != nil {
+		t.Fatalf("write call3: %v", err)
+	}
+	_ = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, gotBytes, err := browserConn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read browser verdict: %v", err)
+	}
+	var verdict judgeMessage
+	if err := json.Unmarshal(gotBytes, &verdict); err != nil {
+		t.Fatalf("unmarshal verdict: %v", err)
+	}
+	if verdict.Judge == nil || !verdict.Judge.Lost || verdict.Judge.SpokenWord != "porte" || verdict.Judge.ForbiddenWord != "Porter" {
+		t.Fatalf("unexpected verdict: %+v", verdict.Judge)
+	}
+
+	_ = browserConn.Close()
+	<-handlerDone
+
+	// Verify all 3 judge events (2 ignored + 1 confirmed) were recorded with their Decision 1 probabilities.
+	entries, err := os.ReadDir(recordingsDir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("expected 1 recording dir, got %d (err=%v)", len(entries), err)
+	}
+	rec, err := os.ReadFile(filepath.Join(recordingsDir, entries[0].Name(), "game.json"))
+	if err != nil {
+		t.Fatalf("read game.json: %v", err)
+	}
+	var gr GameRecording
+	if err := json.Unmarshal(rec, &gr); err != nil {
+		t.Fatalf("unmarshal game.json: %v", err)
+	}
+	if len(gr.JudgeEvents) != 3 {
+		t.Fatalf("expected 3 judge events, got %+v", gr.JudgeEvents)
+	}
+	if !gr.JudgeEvents[0].Ignored || gr.JudgeEvents[0].DecisionProbability == nil || *gr.JudgeEvents[0].DecisionProbability != 0.12 {
+		t.Errorf("unexpected event 0: %+v", gr.JudgeEvents[0])
+	}
+	if !gr.JudgeEvents[1].Ignored || gr.JudgeEvents[1].DecisionProbability == nil || *gr.JudgeEvents[1].DecisionProbability != 0.02 {
+		t.Errorf("unexpected event 1: %+v", gr.JudgeEvents[1])
+	}
+	if gr.JudgeEvents[2].Ignored || gr.JudgeEvents[2].DecisionProbability == nil || *gr.JudgeEvents[2].DecisionProbability != 0.94 {
+		t.Errorf("unexpected event 2: %+v", gr.JudgeEvents[2])
+	}
+}
+
+func TestNewGenAIClientDefaultsToV1BetaForGeminiAPI(t *testing.T) {
+	t.Setenv("GOOGLE_API_KEY", "test-key")
+	t.Setenv("GOOGLE_GENAI_USE_VERTEXAI", "")
+	t.Setenv("GOOGLE_GENAI_USE_ENTERPRISE", "")
+	t.Setenv("GOOGLE_GENAI_API_VERSION", "")
+
+	client, err := NewGenAIClient(context.Background())
+	if err != nil {
+		t.Fatalf("NewGenAIClient: %v", err)
+	}
+	if got := client.ClientConfig().HTTPOptions.APIVersion; got != "v1beta" {
+		t.Fatalf("APIVersion = %q, want %q", got, "v1beta")
 	}
 }

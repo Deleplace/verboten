@@ -62,29 +62,31 @@ type TranscriptEvent struct {
 
 // JudgeEvent records an action taken by the Judge model and when it occurred.
 type JudgeEvent struct {
-	OffsetMs      int64     `json:"offset_ms"`
-	Timestamp     time.Time `json:"timestamp"`
-	Action        string    `json:"action"`
-	Ignored       bool      `json:"ignored,omitempty"`
-	SpokenWord    string    `json:"spoken_word,omitempty"`
-	ForbiddenWord string    `json:"forbidden_word,omitempty"`
-	Reason        string    `json:"reason,omitempty"`
+	OffsetMs            int64     `json:"offset_ms"`
+	Timestamp           time.Time `json:"timestamp"`
+	Action              string    `json:"action"`
+	Ignored             bool      `json:"ignored,omitempty"`
+	SpokenWord          string    `json:"spoken_word,omitempty"`
+	ForbiddenWord       string    `json:"forbidden_word,omitempty"`
+	Reason              string    `json:"reason,omitempty"`
+	DecisionProbability *float64  `json:"decision_probability,omitempty"`
 }
 
 // RecordingEvent is a single chronological line written to events.jsonl.
 type RecordingEvent struct {
-	OffsetMs      int64  `json:"offset_ms"`
-	Type          string `json:"type"`
-	ByteOffset    int64  `json:"byte_offset,omitempty"`
-	ByteLength    int    `json:"byte_length,omitempty"`
-	MIMEType      string `json:"mime_type,omitempty"`
-	Speaker       string `json:"speaker,omitempty"`
-	Text          string `json:"text,omitempty"`
-	Action        string `json:"action,omitempty"`
-	Ignored       bool   `json:"ignored,omitempty"`
-	SpokenWord    string `json:"spoken_word,omitempty"`
-	ForbiddenWord string `json:"forbidden_word,omitempty"`
-	Reason        string `json:"reason,omitempty"`
+	OffsetMs            int64    `json:"offset_ms"`
+	Type                string   `json:"type"`
+	ByteOffset          int64    `json:"byte_offset,omitempty"`
+	ByteLength          int      `json:"byte_length,omitempty"`
+	MIMEType            string   `json:"mime_type,omitempty"`
+	Speaker             string   `json:"speaker,omitempty"`
+	Text                string   `json:"text,omitempty"`
+	Action              string   `json:"action,omitempty"`
+	Ignored             bool     `json:"ignored,omitempty"`
+	SpokenWord          string   `json:"spoken_word,omitempty"`
+	ForbiddenWord       string   `json:"forbidden_word,omitempty"`
+	Reason              string   `json:"reason,omitempty"`
+	DecisionProbability *float64 `json:"decision_probability,omitempty"`
 }
 
 type wavTrackRecorder struct {
@@ -301,7 +303,7 @@ func (r *gameRecorder) RecordTranscript(speaker, text string) {
 	})
 }
 
-func (r *gameRecorder) RecordJudgeEvent(action string, ignored bool, spokenWord, forbiddenWord, reason string) {
+func (r *gameRecorder) RecordJudgeEvent(action string, ignored bool, spokenWord, forbiddenWord, reason string, decisionProb *float64) {
 	if r == nil {
 		return
 	}
@@ -313,23 +315,25 @@ func (r *gameRecorder) RecordJudgeEvent(action string, ignored bool, spokenWord,
 	now := time.Now().UTC()
 	offsetMs := r.offsetMsLocked(now)
 	ev := JudgeEvent{
-		OffsetMs:      offsetMs,
-		Timestamp:     now,
-		Action:        action,
-		Ignored:       ignored,
-		SpokenWord:    spokenWord,
-		ForbiddenWord: forbiddenWord,
-		Reason:        reason,
+		OffsetMs:            offsetMs,
+		Timestamp:           now,
+		Action:              action,
+		Ignored:             ignored,
+		SpokenWord:          spokenWord,
+		ForbiddenWord:       forbiddenWord,
+		Reason:              reason,
+		DecisionProbability: decisionProb,
 	}
 	r.recording.JudgeEvents = append(r.recording.JudgeEvents, ev)
 	r.appendEventLocked(RecordingEvent{
-		OffsetMs:      offsetMs,
-		Type:          "judge_event",
-		Action:        action,
-		Ignored:       ignored,
-		SpokenWord:    spokenWord,
-		ForbiddenWord: forbiddenWord,
-		Reason:        reason,
+		OffsetMs:            offsetMs,
+		Type:                "judge_event",
+		Action:              action,
+		Ignored:             ignored,
+		SpokenWord:          spokenWord,
+		ForbiddenWord:       forbiddenWord,
+		Reason:              reason,
+		DecisionProbability: decisionProb,
 	})
 }
 

@@ -26,9 +26,7 @@ import (
 
 func TestReplayGames(t *testing.T) {
 	ctx := context.Background()
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		// Uses GOOGLE_API_KEY or GOOGLE_GENAI_USE_VERTEXAI + GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION.
-	})
+	client, err := NewGenAIClient(ctx)
 	if err != nil {
 		t.Fatalf("create genai client: %v", err)
 	}

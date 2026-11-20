@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"text/template"
+	"time"
 	"unicode"
 
 	_ "embed"
@@ -25,9 +26,10 @@ import (
 )
 
 type VerbotenGameServer struct {
-	genaiClient   *genai.Client
-	Verbose       bool
-	RecordingsDir string
+	genaiClient      *genai.Client
+	Verbose          bool
+	RecordingsDir    string
+	sameRootProbFunc func(ctx context.Context, lang, spokenWord, forbiddenWord string) (float64, error)
 }
 
 func NewServer(genaiClient *genai.Client) *VerbotenGameServer {
@@ -35,6 +37,21 @@ func NewServer(genaiClient *genai.Client) *VerbotenGameServer {
 		genaiClient:   genaiClient,
 		RecordingsDir: DefaultRecordingsDir,
 	}
+}
+
+// NewGenAIClient creates a genai.Client configured for Verboten's Live and Decisions APIs.
+// Since google.golang.org/genai v1.79+, Gemini Developer API defaults to "v1", whereas
+// BidiGenerateContent (Live API) and /decisions (Gemini Decision 1) require "v1beta".
+func NewGenAIClient(ctx context.Context) (*genai.Client, error) {
+	cfg := &genai.ClientConfig{}
+	useVertex := strings.EqualFold(os.Getenv("GOOGLE_GENAI_USE_VERTEXAI"), "true") ||
+		os.Getenv("GOOGLE_GENAI_USE_VERTEXAI") == "1" ||
+		strings.EqualFold(os.Getenv("GOOGLE_GENAI_USE_ENTERPRISE"), "true") ||
+		os.Getenv("GOOGLE_GENAI_USE_ENTERPRISE") == "1"
+	if !useVertex && os.Getenv("GOOGLE_GENAI_API_VERSION") == "" {
+		cfg.HTTPOptions.APIVersion = "v1beta"
+	}
+	return genai.NewClient(ctx, cfg)
 }
 
 const guesserPrompt = `
@@ -136,7 +153,7 @@ Full list of forbidden words: %s
 
 STRICT LOSS CONDITIONS — You MUST immediately interrupt the game and call %s if the human player pronounces ANY of the following:
 1. EXACT FORBIDDEN WORD (reason="exact"): The target word (%s) OR any of the other forbidden words (%s).
-2. VERY RESEMBLING WORD (reason="resembling"): Any inflection, plural, feminine, verb conjugation, derivative, compound, or word sharing the same root/stem as the target word (%s) OR any of the other forbidden words (%s) (e.g., "poussent" for "Pousser", "cheesy" for "Cheese", "arbres" for "Arbre").
+2. TOO CLOSE / SAME-ROOT WORD (reason="resembling"): Two words are considered "too close" ONLY when they share the SAME ROOT/STEM as the target word (%s) OR any of the other forbidden words (%s) — i.e., an inflection, plural, feminine, verb conjugation, derivative, or compound from the same lexical root (e.g., "poussent" for "Pousser", "porte" for "Porter", "joue" for "Jouer", "cheesy" for "Cheese", "arbres" for "Arbre"). NEVER treat two words as "too close" merely because they are synonyms or semantically related!
 3. EXACT TRANSLATION OF THE TARGET WORD IN ANOTHER LANGUAGE (reason="translation"): Any word that is the exact translation of the TARGET WORD (%s) in ANY other language — whether intentional or accidental, whether spoken alone or inside a %s sentence, and including plurals or inflections of that translation!
    Examples of FORBIDDEN exact translations of a target word (MUST immediately call %s with reason="translation"):
    - Target "Citron" -> player says "lemon", "lemons", "limón", "Zitrone", "limone" -> LOST!
@@ -147,7 +164,12 @@ STRICT LOSS CONDITIONS — You MUST immediately interrupt the game and call %s i
    IMPORTANT: Check foreign-language translations ONLY for the target word (%s). Do NOT check or penalize translations in other languages for the other forbidden words (%s).
 
 ALLOWED (do NOT call %s):
-- Same-language synonyms, descriptions, or semantically related words in %s that do NOT share the same root as any forbidden word AND are NOT an exact translation of the target word (%s) in another language (for example, saying "mozzarella" when "Cheese" is forbidden, "ficelle" when "Corde" is forbidden, or "tronc" when "Arbre" is forbidden, is valid and must NOT end the game).
+- Any word in %s that does NOT share the same root as any forbidden word AND is NOT an exact translation of the target word (%s) in another language, even if it is a synonym or semantically related!
+  Examples that are STRICTLY ALLOWED (must NOT trigger a loss):
+  - "flamme" / "flammes" is NOT too close to "feu" (different roots).
+  - "grand" is NOT too close to "flamme" (different roots).
+  - "gros" is NOT too close to "grand" (synonym with a different root).
+  - "mozzarella" is NOT too close to "Cheese"; "ficelle" is NOT too close to "Corde"; "tronc" is NOT too close to "Arbre".
 - Translations in another language of the OTHER forbidden words (%s) — only translations of the target word (%s) are forbidden.
 - Unclear background noise or hesitation sounds ("um", "euh") unless condition 1, 2, or 3 was clearly triggered.
 
@@ -461,11 +483,9 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 						forbiddenWord, _ := fc.Args["forbidden_word"].(string)
 						spokenWord, _ := fc.Args["spoken_word"].(string)
 						reason, _ := fc.Args["reason"].(string)
-						if reason == "translation" && targetWord != "" && normalizeWord(forbiddenWord) != normalizeWord(targetWord) {
-							recorder.RecordJudgeEvent(fc.Name, true, spokenWord, forbiddenWord, reason)
-							if vg.Verbose {
-								log.Printf("Game %s ignoring Judge translation call for non-target word %q (target=%q)", gameID, forbiddenWord, targetWord)
-							}
+
+						ignoreAndKeepListening := func(resultMsg string, decisionProb *float64) {
+							recorder.RecordJudgeEvent(fc.Name, true, spokenWord, forbiddenWord, reason, decisionProb)
 							judgeWriteMu.Lock()
 							err := sessionJudge.SendToolResponse(genai.LiveToolResponseInput{
 								FunctionResponses: []*genai.FunctionResponse{
@@ -473,7 +493,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 										ID:   fc.ID,
 										Name: fc.Name,
 										Response: map[string]any{
-											"result": "Ignored: foreign-language translations are only forbidden for the target word. Keep listening.",
+											"result": resultMsg,
 										},
 									},
 								},
@@ -482,12 +502,44 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 							if err != nil && !gameOver.Load() {
 								log.Println("send tool response to judge error: ", err)
 							}
+						}
+
+						if reason == "translation" && targetWord != "" && normalizeWord(forbiddenWord) != normalizeWord(targetWord) {
+							if vg.Verbose {
+								log.Printf("Game %s ignoring Judge translation call for non-target word %q (target=%q)", gameID, forbiddenWord, targetWord)
+							}
+							ignoreAndKeepListening("Ignored: foreign-language translations are only forbidden for the target word. Keep listening.", nil)
 							continue
 						}
+
+						// When the Judge detects a "too close" (resembling) word — or any non-translation
+						// call where the spoken and forbidden words are not identical — double-check with
+						// Gemini Decision 1 whether they share the same root (threshold >= 75%).
+						var decisionProb *float64
+						isExactMatch := spokenWord != "" && forbiddenWord != "" && normalizeWord(spokenWord) == normalizeWord(forbiddenWord)
+						if reason != "translation" && !isExactMatch && spokenWord != "" && forbiddenWord != "" {
+							checkCtx, checkCancel := context.WithTimeout(ctx, 5*time.Second)
+							prob, err := vg.sameRootProbability(checkCtx, lang, spokenWord, forbiddenWord)
+							checkCancel()
+							if err != nil {
+								log.Printf("Game %s Decision 1 error (spoken=%q forbidden=%q): %v", gameID, spokenWord, forbiddenWord, err)
+							} else {
+								decisionProb = &prob
+								log.Printf("Game %s Proximité entre '%s' et '%s': %.0f%%.", gameID, spokenWord, forbiddenWord, prob*100)
+								if prob < sameRootProbabilityThreshold {
+									ignoreAndKeepListening(
+										fmt.Sprintf("Ignored: %q is not too close to %q (same-root probability %.0f%% < 75%%). Keep listening.", spokenWord, forbiddenWord, prob*100),
+										decisionProb,
+									)
+									continue
+								}
+							}
+						}
+
 						if !gameOver.CompareAndSwap(false, true) {
 							return
 						}
-						recorder.RecordJudgeEvent(fc.Name, false, spokenWord, forbiddenWord, reason)
+						recorder.RecordJudgeEvent(fc.Name, false, spokenWord, forbiddenWord, reason, decisionProb)
 						if reason != "" {
 							log.Printf("Game %s Judge declared loss (%s): spoken=%q forbidden=%q", gameID, reason, spokenWord, forbiddenWord)
 						} else {

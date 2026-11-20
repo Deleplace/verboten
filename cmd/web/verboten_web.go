@@ -32,9 +32,7 @@ func main() {
 		// fmt.Printf("%s=%s\n", k, os.Getenv(k))
 		_ = k
 	}
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		// empty ClientConfig automatically uses the env vars listed above
-	})
+	client, err := verboten.NewGenAIClient(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
