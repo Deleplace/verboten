@@ -384,7 +384,11 @@ func TestFrenchLanguageConfiguration(t *testing.T) {
 
 			gameServer := NewServer(client)
 			gameServer.RecordingsDir = t.TempDir()
-			appServer := httptest.NewServer(http.HandlerFunc(gameServer.liveGame))
+			handlerDone := make(chan struct{})
+			appServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer close(handlerDone)
+				gameServer.liveGame(w, r)
+			}))
 			defer appServer.Close()
 
 			browserURL := "ws://" + strings.TrimPrefix(appServer.URL, "http://") +
@@ -393,7 +397,13 @@ func TestFrenchLanguageConfiguration(t *testing.T) {
 			if err != nil {
 				t.Fatalf("dial liveGame: %v", err)
 			}
-			defer browserConn.Close()
+			defer func() {
+				_ = browserConn.Close()
+				select {
+				case <-handlerDone:
+				case <-time.After(3 * time.Second):
+				}
+			}()
 
 			select {
 			case <-bothUp:
@@ -437,12 +447,12 @@ func TestFrenchLanguageConfiguration(t *testing.T) {
 	}
 }
 
-func TestDecisionSameRootWireFormat(t *testing.T) {
+func TestSameRootGeminiWireFormat(t *testing.T) {
 	var (
 		gotPath string
 		gotBody string
 	)
-	fakeDecisionServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	fakeGeminiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		b, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -452,15 +462,15 @@ func TestDecisionSameRootWireFormat(t *testing.T) {
 		}
 		gotBody = string(b)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"answers":{"same_root":{"type":"noul","noul":0.12,"confidence":0.88}}}`))
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"No"}]}}]}`))
 	}))
-	defer fakeDecisionServer.Close()
+	defer fakeGeminiServer.Close()
 
 	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
 		APIKey:  "test-api-key",
 		Backend: genai.BackendGeminiAPI,
 		HTTPOptions: genai.HTTPOptions{
-			BaseURL:    fakeDecisionServer.URL + "/",
+			BaseURL:    fakeGeminiServer.URL + "/",
 			APIVersion: "v1beta",
 		},
 	})
@@ -469,25 +479,26 @@ func TestDecisionSameRootWireFormat(t *testing.T) {
 	}
 
 	server := NewServer(client)
-	prob, err := server.sameRootProbability(context.Background(), "fr", "flamme", "feu")
+	sameRoot, answer, elapsed, err := server.isSameRoot(context.Background(), "fr", "flamme", "feu")
 	if err != nil {
-		t.Fatalf("sameRootProbability: %v", err)
+		t.Fatalf("isSameRoot: %v", err)
 	}
-	if prob != 0.12 {
-		t.Fatalf("prob = %v, want 0.12", prob)
+	if elapsed <= 0 {
+		t.Errorf("elapsed = %v, want > 0", elapsed)
 	}
-	if gotPath != "/v1beta/decisions" {
-		t.Errorf("request path = %q, want %q", gotPath, "/v1beta/decisions")
+	if sameRoot || answer != "No" {
+		t.Fatalf("sameRoot=%v answer=%q, want false / No", sameRoot, answer)
+	}
+	wantPath := "/v1beta/models/" + decisionModelName + ":generateContent"
+	if gotPath != wantPath {
+		t.Errorf("request path = %q, want %q", gotPath, wantPath)
 	}
 	wantQuestion := "Le mot 'flamme' est-il trop proche du mot 'feu' pour le jeu des mots prohibés, car ayant la même racine?"
-	if !strings.Contains(gotBody, `"model":"gemini-decision-1"`) {
-		t.Errorf("request body missing model gemini-decision-1: %s", gotBody)
-	}
-	if !strings.Contains(gotBody, `"type":"noul"`) {
-		t.Errorf("request body missing noul question type: %s", gotBody)
-	}
 	if !strings.Contains(gotBody, wantQuestion) {
 		t.Errorf("request body missing expected French question %q: %s", wantQuestion, gotBody)
+	}
+	if !strings.Contains(gotBody, `"thinkingLevel":"MINIMAL"`) {
+		t.Errorf("request body missing thinkingLevel=MINIMAL: %s", gotBody)
 	}
 }
 
@@ -554,16 +565,25 @@ func TestDecisionSameRootFilteringInLiveGame(t *testing.T) {
 	recordingsDir := t.TempDir()
 	gameServer := NewServer(client)
 	gameServer.RecordingsDir = recordingsDir
-	gameServer.sameRootProbFunc = func(ctx context.Context, lang, spoken, forbidden string) (float64, error) {
+	var (
+		durMu     sync.Mutex
+		durations []time.Duration
+	)
+	gameServer.onSameRootDuration = func(d time.Duration) {
+		durMu.Lock()
+		durations = append(durations, d)
+		durMu.Unlock()
+	}
+	gameServer.sameRootCheckFunc = func(ctx context.Context, lang, spoken, forbidden string) (bool, error) {
 		switch normalizeWord(spoken) + ":" + normalizeWord(forbidden) {
 		case "flamme:feu":
-			return 0.12, nil
+			return false, nil
 		case "grand:flamme":
-			return 0.02, nil
+			return false, nil
 		case "porte:porter":
-			return 0.94, nil
+			return true, nil
 		default:
-			return 0.0, nil
+			return false, nil
 		}
 	}
 
@@ -672,14 +692,45 @@ func TestDecisionSameRootFilteringInLiveGame(t *testing.T) {
 	if len(gr.JudgeEvents) != 3 {
 		t.Fatalf("expected 3 judge events, got %+v", gr.JudgeEvents)
 	}
-	if !gr.JudgeEvents[0].Ignored || gr.JudgeEvents[0].DecisionProbability == nil || *gr.JudgeEvents[0].DecisionProbability != 0.12 {
+	if !gr.JudgeEvents[0].Ignored || gr.JudgeEvents[0].DecisionAnswer != "No" {
 		t.Errorf("unexpected event 0: %+v", gr.JudgeEvents[0])
 	}
-	if !gr.JudgeEvents[1].Ignored || gr.JudgeEvents[1].DecisionProbability == nil || *gr.JudgeEvents[1].DecisionProbability != 0.02 {
+	if !gr.JudgeEvents[1].Ignored || gr.JudgeEvents[1].DecisionAnswer != "No" {
 		t.Errorf("unexpected event 1: %+v", gr.JudgeEvents[1])
 	}
-	if gr.JudgeEvents[2].Ignored || gr.JudgeEvents[2].DecisionProbability == nil || *gr.JudgeEvents[2].DecisionProbability != 0.94 {
+	if gr.JudgeEvents[2].Ignored || gr.JudgeEvents[2].DecisionAnswer != "Yes" {
 		t.Errorf("unexpected event 2: %+v", gr.JudgeEvents[2])
+	}
+	for i, ev := range gr.JudgeEvents {
+		if ev.DecisionDurationMs == nil {
+			t.Errorf("event %d missing DecisionDurationMs: %+v", i, ev)
+		}
+	}
+	durMu.Lock()
+	gotDurCount := len(durations)
+	durMu.Unlock()
+	if gotDurCount != 3 {
+		t.Errorf("recorded %d decision durations, want 3", gotDurCount)
+	}
+}
+
+func TestSummarizeDurations(t *testing.T) {
+	odd := summarizeDurations([]time.Duration{
+		500 * time.Millisecond,
+		100 * time.Millisecond,
+		200 * time.Millisecond,
+	})
+	if odd.Count != 3 || odd.Median != 200*time.Millisecond || odd.Min != 100*time.Millisecond || odd.Max != 500*time.Millisecond {
+		t.Errorf("unexpected odd stats: %+v", odd)
+	}
+	even := summarizeDurations([]time.Duration{
+		400 * time.Millisecond,
+		100 * time.Millisecond,
+		300 * time.Millisecond,
+		200 * time.Millisecond,
+	})
+	if even.Count != 4 || even.Median != 250*time.Millisecond || even.Avg != 250*time.Millisecond {
+		t.Errorf("unexpected even stats: %+v", even)
 	}
 }
 

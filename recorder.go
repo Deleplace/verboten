@@ -70,6 +70,8 @@ type JudgeEvent struct {
 	ForbiddenWord       string    `json:"forbidden_word,omitempty"`
 	Reason              string    `json:"reason,omitempty"`
 	DecisionProbability *float64  `json:"decision_probability,omitempty"`
+	DecisionAnswer      string    `json:"decision_answer,omitempty"`
+	DecisionDurationMs  *int64    `json:"decision_duration_ms,omitempty"`
 }
 
 // RecordingEvent is a single chronological line written to events.jsonl.
@@ -87,6 +89,8 @@ type RecordingEvent struct {
 	ForbiddenWord       string   `json:"forbidden_word,omitempty"`
 	Reason              string   `json:"reason,omitempty"`
 	DecisionProbability *float64 `json:"decision_probability,omitempty"`
+	DecisionAnswer      string   `json:"decision_answer,omitempty"`
+	DecisionDurationMs  *int64   `json:"decision_duration_ms,omitempty"`
 }
 
 type wavTrackRecorder struct {
@@ -303,7 +307,7 @@ func (r *gameRecorder) RecordTranscript(speaker, text string) {
 	})
 }
 
-func (r *gameRecorder) RecordJudgeEvent(action string, ignored bool, spokenWord, forbiddenWord, reason string, decisionProb *float64) {
+func (r *gameRecorder) RecordJudgeEvent(action string, ignored bool, spokenWord, forbiddenWord, reason string, decisionAnswer string, decisionDurationMs *int64) {
 	if r == nil {
 		return
 	}
@@ -315,25 +319,27 @@ func (r *gameRecorder) RecordJudgeEvent(action string, ignored bool, spokenWord,
 	now := time.Now().UTC()
 	offsetMs := r.offsetMsLocked(now)
 	ev := JudgeEvent{
-		OffsetMs:            offsetMs,
-		Timestamp:           now,
-		Action:              action,
-		Ignored:             ignored,
-		SpokenWord:          spokenWord,
-		ForbiddenWord:       forbiddenWord,
-		Reason:              reason,
-		DecisionProbability: decisionProb,
+		OffsetMs:           offsetMs,
+		Timestamp:          now,
+		Action:             action,
+		Ignored:            ignored,
+		SpokenWord:         spokenWord,
+		ForbiddenWord:      forbiddenWord,
+		Reason:             reason,
+		DecisionAnswer:     decisionAnswer,
+		DecisionDurationMs: decisionDurationMs,
 	}
 	r.recording.JudgeEvents = append(r.recording.JudgeEvents, ev)
 	r.appendEventLocked(RecordingEvent{
-		OffsetMs:            offsetMs,
-		Type:                "judge_event",
-		Action:              action,
-		Ignored:             ignored,
-		SpokenWord:          spokenWord,
-		ForbiddenWord:       forbiddenWord,
-		Reason:              reason,
-		DecisionProbability: decisionProb,
+		OffsetMs:           offsetMs,
+		Type:               "judge_event",
+		Action:             action,
+		Ignored:            ignored,
+		SpokenWord:         spokenWord,
+		ForbiddenWord:      forbiddenWord,
+		Reason:             reason,
+		DecisionAnswer:     decisionAnswer,
+		DecisionDurationMs: decisionDurationMs,
 	})
 }
 

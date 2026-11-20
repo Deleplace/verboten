@@ -26,10 +26,11 @@ import (
 )
 
 type VerbotenGameServer struct {
-	genaiClient      *genai.Client
-	Verbose          bool
-	RecordingsDir    string
-	sameRootProbFunc func(ctx context.Context, lang, spokenWord, forbiddenWord string) (float64, error)
+	genaiClient        *genai.Client
+	Verbose            bool
+	RecordingsDir      string
+	sameRootCheckFunc  func(ctx context.Context, lang, spokenWord, forbiddenWord string) (bool, error)
+	onSameRootDuration func(time.Duration)
 }
 
 func NewServer(genaiClient *genai.Client) *VerbotenGameServer {
@@ -484,8 +485,8 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 						spokenWord, _ := fc.Args["spoken_word"].(string)
 						reason, _ := fc.Args["reason"].(string)
 
-						ignoreAndKeepListening := func(resultMsg string, decisionProb *float64) {
-							recorder.RecordJudgeEvent(fc.Name, true, spokenWord, forbiddenWord, reason, decisionProb)
+						ignoreAndKeepListening := func(resultMsg string, decisionAnswer string, decisionDurationMs *int64) {
+							recorder.RecordJudgeEvent(fc.Name, true, spokenWord, forbiddenWord, reason, decisionAnswer, decisionDurationMs)
 							judgeWriteMu.Lock()
 							err := sessionJudge.SendToolResponse(genai.LiveToolResponseInput{
 								FunctionResponses: []*genai.FunctionResponse{
@@ -508,28 +509,32 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 							if vg.Verbose {
 								log.Printf("Game %s ignoring Judge translation call for non-target word %q (target=%q)", gameID, forbiddenWord, targetWord)
 							}
-							ignoreAndKeepListening("Ignored: foreign-language translations are only forbidden for the target word. Keep listening.", nil)
+							ignoreAndKeepListening("Ignored: foreign-language translations are only forbidden for the target word. Keep listening.", "", nil)
 							continue
 						}
 
 						// When the Judge detects a "too close" (resembling) word — or any non-translation
 						// call where the spoken and forbidden words are not identical — double-check with
-						// Gemini Decision 1 whether they share the same root (threshold >= 75%).
-						var decisionProb *float64
+						// regular Gemini (Yes/No) whether they share the same root.
+						var decisionAnswer string
+						var decisionDurationMs *int64
 						isExactMatch := spokenWord != "" && forbiddenWord != "" && normalizeWord(spokenWord) == normalizeWord(forbiddenWord)
 						if reason != "translation" && !isExactMatch && spokenWord != "" && forbiddenWord != "" {
 							checkCtx, checkCancel := context.WithTimeout(ctx, 5*time.Second)
-							prob, err := vg.sameRootProbability(checkCtx, lang, spokenWord, forbiddenWord)
+							sameRoot, answer, decisionElapsed, err := vg.isSameRoot(checkCtx, lang, spokenWord, forbiddenWord)
 							checkCancel()
+							ms := decisionElapsed.Milliseconds()
+							decisionDurationMs = &ms
 							if err != nil {
-								log.Printf("Game %s Decision 1 error (spoken=%q forbidden=%q): %v", gameID, spokenWord, forbiddenWord, err)
+								log.Printf("Game %s same-root check error (spoken=%q forbidden=%q, %s): %v", gameID, spokenWord, forbiddenWord, decisionElapsed.Round(time.Millisecond), err)
 							} else {
-								decisionProb = &prob
-								log.Printf("Game %s Proximité entre '%s' et '%s': %.0f%%.", gameID, spokenWord, forbiddenWord, prob*100)
-								if prob < sameRootProbabilityThreshold {
+								decisionAnswer = answer
+								log.Printf("Game %s Proximité entre '%s' et '%s': %s (%s).", gameID, spokenWord, forbiddenWord, answer, decisionElapsed.Round(time.Millisecond))
+								if !sameRoot {
 									ignoreAndKeepListening(
-										fmt.Sprintf("Ignored: %q is not too close to %q (same-root probability %.0f%% < 75%%). Keep listening.", spokenWord, forbiddenWord, prob*100),
-										decisionProb,
+										fmt.Sprintf("Ignored: %q is not too close to %q (answer %s). Keep listening.", spokenWord, forbiddenWord, answer),
+										decisionAnswer,
+										decisionDurationMs,
 									)
 									continue
 								}
@@ -539,7 +544,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 						if !gameOver.CompareAndSwap(false, true) {
 							return
 						}
-						recorder.RecordJudgeEvent(fc.Name, false, spokenWord, forbiddenWord, reason, decisionProb)
+						recorder.RecordJudgeEvent(fc.Name, false, spokenWord, forbiddenWord, reason, decisionAnswer, decisionDurationMs)
 						if reason != "" {
 							log.Printf("Game %s Judge declared loss (%s): spoken=%q forbidden=%q", gameID, reason, spokenWord, forbiddenWord)
 						} else {

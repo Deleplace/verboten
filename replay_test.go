@@ -31,6 +31,16 @@ func TestReplayGames(t *testing.T) {
 		t.Fatalf("create genai client: %v", err)
 	}
 
+	var (
+		durMu     sync.Mutex
+		durations []time.Duration
+	)
+	recordDuration := func(d time.Duration) {
+		durMu.Lock()
+		durations = append(durations, d)
+		durMu.Unlock()
+	}
+
 	for _, outcome := range []string{"won", "lost"} {
 		expectWin := outcome == "won"
 		baseDir := filepath.Join("testdata", "games", outcome)
@@ -51,14 +61,94 @@ func TestReplayGames(t *testing.T) {
 			for _, name := range dirs {
 				gameDir := filepath.Join(baseDir, name)
 				t.Run(name, func(t *testing.T) {
-					replayGame(t, client, gameDir, expectWin)
+					replayGame(t, client, gameDir, expectWin, recordDuration)
 				})
 			}
 		})
 	}
+
+	durMu.Lock()
+	stats := summarizeDurations(durations)
+	durMu.Unlock()
+	if stats.Count > 0 {
+		t.Logf("Replay same-root decision latency (%s): count=%d avg=%s median=%s min=%s max=%s",
+			decisionModelName, stats.Count,
+			stats.Avg.Round(time.Millisecond), stats.Median.Round(time.Millisecond),
+			stats.Min.Round(time.Millisecond), stats.Max.Round(time.Millisecond))
+	} else {
+		t.Logf("Replay same-root decision latency (%s): 0 calls triggered during replay", decisionModelName)
+	}
 }
 
-func replayGame(t *testing.T, client *genai.Client, gameDir string, expectWin bool) {
+func TestSameRootDecisionLatency(t *testing.T) {
+	ctx := context.Background()
+	client, err := NewGenAIClient(ctx)
+	if err != nil {
+		t.Fatalf("create genai client: %v", err)
+	}
+	server := NewServer(client)
+
+	cases := []struct {
+		lang      string
+		spoken    string
+		forbidden string
+		wantClose bool
+	}{
+		// French: NOT same root
+		{"fr", "flamme", "Feu", false},
+		{"fr", "Grand", "flamme", false},
+		{"fr", "gros", "Grand", false},
+		{"fr", "couvre-chef", "Chapeau", false},
+		{"fr", "camion", "Voiture", false},
+		{"fr", "flotte", "Rivière", false},
+		{"fr", "jaunâtre", "Agrume", false},
+		{"fr", "crache", "Feu", false},
+		{"fr", "animal", "Bête", false},
+		{"fr", "aiguille", "Montre", false},
+		// French: SAME root
+		{"fr", "porte", "Porter", true},
+		{"fr", "joue", "Jouer", true},
+		{"fr", "poussent", "Pousser", true},
+		{"fr", "arbres", "Arbre", true},
+		{"fr", "coupé", "Couper", true},
+		{"fr", "conduite", "Conduire", true},
+		// English: NOT same root
+		{"en", "flame", "Fire", false},
+		{"en", "big", "Large", false},
+		// English: SAME root
+		{"en", "cheesy", "Cheese", true},
+		{"en", "playing", "Play", true},
+	}
+
+	var durations []time.Duration
+	correct := 0
+	for _, tc := range cases {
+		checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		gotClose, answer, elapsed, err := server.isSameRoot(checkCtx, tc.lang, tc.spoken, tc.forbidden)
+		cancel()
+		if err != nil {
+			t.Errorf("[%s] %q vs %q: error after %s: %v", tc.lang, tc.spoken, tc.forbidden, elapsed.Round(time.Millisecond), err)
+			continue
+		}
+		durations = append(durations, elapsed)
+		status := "OK"
+		if gotClose == tc.wantClose {
+			correct++
+		} else {
+			status = "MISMATCH"
+		}
+		t.Logf("[%s] %-12q vs %-10q -> answer=%-3s close=%v (want %v) [%s] (%s)",
+			tc.lang, tc.spoken, tc.forbidden, answer, gotClose, tc.wantClose, status, elapsed.Round(time.Millisecond))
+	}
+
+	stats := summarizeDurations(durations)
+	t.Logf("SUMMARY (%s): count=%d accuracy=%d/%d avg=%s median=%s min=%s max=%s",
+		decisionModelName, stats.Count, correct, len(cases),
+		stats.Avg.Round(time.Millisecond), stats.Median.Round(time.Millisecond),
+		stats.Min.Round(time.Millisecond), stats.Max.Round(time.Millisecond))
+}
+
+func replayGame(t *testing.T, client *genai.Client, gameDir string, expectWin bool, onDecisionDuration func(time.Duration)) {
 	rec, err := loadGameRecording(filepath.Join(gameDir, "game.json"))
 	if err != nil {
 		t.Fatalf("load game.json: %v", err)
@@ -99,6 +189,7 @@ func replayGame(t *testing.T, client *genai.Client, gameDir string, expectWin bo
 	gameServer := NewServer(client)
 	gameServer.Verbose = testing.Verbose()
 	gameServer.RecordingsDir = t.TempDir()
+	gameServer.onSameRootDuration = onDecisionDuration
 
 	handlerDone := make(chan struct{})
 	appServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
