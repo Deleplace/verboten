@@ -1,0 +1,63 @@
+{
+  "game_id": "JVDN",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T13:13:53.996218Z",
+  "ended_at": "2026-11-23T13:14:11.321531Z",
+  "duration_ms": 17325,
+  "target_word": "Zebra",
+  "forbidden_words": [
+    "Stripes",
+    "Horse",
+    "Africa",
+    "Animal"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3236,
+    "last_packet_ms": 17278,
+    "packet_count": 220,
+    "total_bytes": 450560,
+    "audio_duration_ms": 14080
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 6120,
+    "last_packet_ms": 16535,
+    "packet_count": 10,
+    "total_bytes": 78752,
+    "audio_duration_ms": 1640
+  },
+  "transcripts": [
+    {
+      "offset_ms": 6071,
+      "speaker": "human",
+      "text": "Hmm."
+    },
+    {
+      "offset_ms": 6120,
+      "speaker": "guesser",
+      "text": "Tree?"
+    },
+    {
+      "offset_ms": 16097,
+      "speaker": "human",
+      "text": "It has black and white black and white and you can hide it. But it's wild."
+    },
+    {
+      "offset_ms": 16121,
+      "speaker": "guesser",
+      "text": "Zebra?"
+    }
+  ],
+  "judge_events": []
+}

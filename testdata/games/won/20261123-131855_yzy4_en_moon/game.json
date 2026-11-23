@@ -1,0 +1,53 @@
+{
+  "game_id": "yZY4",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T13:18:55.709647Z",
+  "ended_at": "2026-11-23T13:19:05.803219Z",
+  "duration_ms": 10093,
+  "target_word": "Moon",
+  "forbidden_words": [
+    "Night",
+    "Sky",
+    "Space",
+    "Planet"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3183,
+    "last_packet_ms": 10041,
+    "packet_count": 108,
+    "total_bytes": 221184,
+    "audio_duration_ms": 6912
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 8889,
+    "last_packet_ms": 9098,
+    "packet_count": 7,
+    "total_bytes": 47550,
+    "audio_duration_ms": 990
+  },
+  "transcripts": [
+    {
+      "offset_ms": 8884,
+      "speaker": "human",
+      "text": "It's the natural satellite of Earth."
+    },
+    {
+      "offset_ms": 8889,
+      "speaker": "guesser",
+      "text": "Moon"
+    }
+  ],
+  "judge_events": []
+}

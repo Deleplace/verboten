@@ -1,0 +1,53 @@
+{
+  "game_id": "lR03",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T13:25:01.68723Z",
+  "ended_at": "2026-11-23T13:25:08.920138Z",
+  "duration_ms": 7232,
+  "target_word": "Guitar",
+  "forbidden_words": [
+    "Strings",
+    "Music",
+    "Instrument",
+    "Play"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3196,
+    "last_packet_ms": 7228,
+    "packet_count": 64,
+    "total_bytes": 131072,
+    "audio_duration_ms": 4096
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 6029,
+    "last_packet_ms": 6231,
+    "packet_count": 5,
+    "total_bytes": 40830,
+    "audio_duration_ms": 850
+  },
+  "transcripts": [
+    {
+      "offset_ms": 6003,
+      "speaker": "human",
+      "text": "It's a large ukulele."
+    },
+    {
+      "offset_ms": 6029,
+      "speaker": "guesser",
+      "text": "Guitar"
+    }
+  ],
+  "judge_events": []
+}

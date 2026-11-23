@@ -1,0 +1,53 @@
+{
+  "game_id": "hDZ8",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T13:21:13.477972Z",
+  "ended_at": "2026-11-23T13:21:28.119648Z",
+  "duration_ms": 14641,
+  "target_word": "Pizza",
+  "forbidden_words": [
+    "Cheese",
+    "Dough",
+    "Pepperoni",
+    "Italian"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3396,
+    "last_packet_ms": 14606,
+    "packet_count": 176,
+    "total_bytes": 360448,
+    "audio_duration_ms": 11264
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 13437,
+    "last_packet_ms": 13667,
+    "packet_count": 6,
+    "total_bytes": 42750,
+    "audio_duration_ms": 890
+  },
+  "transcripts": [
+    {
+      "offset_ms": 13347,
+      "speaker": "human",
+      "text": "It's round, edible, full of hot stuff and melted mozzarella."
+    },
+    {
+      "offset_ms": 13437,
+      "speaker": "guesser",
+      "text": "Pizza"
+    }
+  ],
+  "judge_events": []
+}

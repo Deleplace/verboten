@@ -1,0 +1,53 @@
+{
+  "game_id": "iBaf",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T13:25:49.04547Z",
+  "ended_at": "2026-11-23T13:25:59.815475Z",
+  "duration_ms": 10770,
+  "target_word": "Yacht",
+  "forbidden_words": [
+    "Boat",
+    "Sail",
+    "Water",
+    "Luxury"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3375,
+    "last_packet_ms": 10744,
+    "packet_count": 116,
+    "total_bytes": 237568,
+    "audio_duration_ms": 7424
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 9566,
+    "last_packet_ms": 9764,
+    "packet_count": 5,
+    "total_bytes": 34562,
+    "audio_duration_ms": 720
+  },
+  "transcripts": [
+    {
+      "offset_ms": 9532,
+      "speaker": "human",
+      "text": "a It's on the sea owned by very rich people."
+    },
+    {
+      "offset_ms": 9566,
+      "speaker": "guesser",
+      "text": "Yacht"
+    }
+  ],
+  "judge_events": []
+}

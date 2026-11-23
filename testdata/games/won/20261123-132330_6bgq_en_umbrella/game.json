@@ -1,0 +1,63 @@
+{
+  "game_id": "6Bgq",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T13:23:30.390919Z",
+  "ended_at": "2026-11-23T13:23:50.016698Z",
+  "duration_ms": 19625,
+  "target_word": "Umbrella",
+  "forbidden_words": [
+    "Rain",
+    "Wet",
+    "Open",
+    "Close"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3253,
+    "last_packet_ms": 19598,
+    "packet_count": 256,
+    "total_bytes": 524288,
+    "audio_duration_ms": 16384
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 13434,
+    "last_packet_ms": 18575,
+    "packet_count": 12,
+    "total_bytes": 92700,
+    "audio_duration_ms": 1931
+  },
+  "transcripts": [
+    {
+      "offset_ms": 13281,
+      "speaker": "human",
+      "text": "It is what I need when I go to Kabour because the weather is not super nice."
+    },
+    {
+      "offset_ms": 13434,
+      "speaker": "guesser",
+      "text": "Raincoat"
+    },
+    {
+      "offset_ms": 18373,
+      "speaker": "human",
+      "text": "Yes, but I hold it in my hand."
+    },
+    {
+      "offset_ms": 18422,
+      "speaker": "guesser",
+      "text": "Umbrella"
+    }
+  ],
+  "judge_events": []
+}

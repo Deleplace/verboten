@@ -1,0 +1,63 @@
+{
+  "game_id": "Tall",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T13:24:41.574898Z",
+  "ended_at": "2026-11-23T13:24:56.655313Z",
+  "duration_ms": 15080,
+  "target_word": "Forest",
+  "forbidden_words": [
+    "Trees",
+    "Woods",
+    "Green",
+    "Nature"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3235,
+    "last_packet_ms": 15037,
+    "packet_count": 185,
+    "total_bytes": 378880,
+    "audio_duration_ms": 11840
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 10071,
+    "last_packet_ms": 14030,
+    "packet_count": 11,
+    "total_bytes": 64804,
+    "audio_duration_ms": 1350
+  },
+  "transcripts": [
+    {
+      "offset_ms": 10068,
+      "speaker": "human",
+      "text": "Lots of trunks and leaves and animals like in Amazonia."
+    },
+    {
+      "offset_ms": 10071,
+      "speaker": "guesser",
+      "text": "Jungle"
+    },
+    {
+      "offset_ms": 13875,
+      "speaker": "human",
+      "text": "Yes, what is that?"
+    },
+    {
+      "offset_ms": 13877,
+      "speaker": "guesser",
+      "text": "Forest"
+    }
+  ],
+  "judge_events": []
+}

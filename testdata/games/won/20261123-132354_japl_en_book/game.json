@@ -1,0 +1,53 @@
+{
+  "game_id": "JaPl",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T13:23:54.993967Z",
+  "ended_at": "2026-11-23T13:24:11.382015Z",
+  "duration_ms": 16388,
+  "target_word": "Book",
+  "forbidden_words": [
+    "Read",
+    "Pages",
+    "Words",
+    "Library"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3375,
+    "last_packet_ms": 16373,
+    "packet_count": 204,
+    "total_bytes": 417792,
+    "audio_duration_ms": 13056
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 15183,
+    "last_packet_ms": 15327,
+    "packet_count": 5,
+    "total_bytes": 38910,
+    "audio_duration_ms": 810
+  },
+  "transcripts": [
+    {
+      "offset_ms": 15150,
+      "speaker": "human",
+      "text": "It's an object. I have many of them at home on my shelf. They are full of letters."
+    },
+    {
+      "offset_ms": 15183,
+      "speaker": "guesser",
+      "text": "Book"
+    }
+  ],
+  "judge_events": []
+}

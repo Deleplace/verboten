@@ -1,0 +1,58 @@
+{
+  "game_id": "avNw",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T13:14:19.66226Z",
+  "ended_at": "2026-11-23T13:14:33.67678Z",
+  "duration_ms": 14014,
+  "target_word": "Xylophone",
+  "forbidden_words": [
+    "Music",
+    "Hit",
+    "Bars",
+    "Instrument"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3375,
+    "last_packet_ms": 13967,
+    "packet_count": 166,
+    "total_bytes": 339968,
+    "audio_duration_ms": 10624
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 12810,
+    "last_packet_ms": 13061,
+    "packet_count": 7,
+    "total_bytes": 41762,
+    "audio_duration_ms": 870
+  },
+  "transcripts": [
+    {
+      "offset_ms": 6467,
+      "speaker": "human",
+      "text": "mhm"
+    },
+    {
+      "offset_ms": 12788,
+      "speaker": "human",
+      "text": " Play it with very little hammers and it goes ding ding ding ding ding."
+    },
+    {
+      "offset_ms": 12810,
+      "speaker": "guesser",
+      "text": "Xylophone"
+    }
+  ],
+  "judge_events": []
+}

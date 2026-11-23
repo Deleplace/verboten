@@ -1,0 +1,54 @@
+{
+  "game_id": "d70Y",
+  "outcome": "won",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T14:05:29.148294Z",
+  "ended_at": "2026-11-23T14:05:37.463441Z",
+  "duration_ms": 8315,
+  "target_word": "Moon",
+  "forbidden_words": [
+    "Night",
+    "Sky",
+    "Space",
+    "Planet"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3232,
+    "last_packet_ms": 8304,
+    "packet_count": 80,
+    "total_bytes": 163840,
+    "audio_duration_ms": 5120
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 7110,
+    "last_packet_ms": 7292,
+    "packet_count": 5,
+    "total_bytes": 44190,
+    "audio_duration_ms": 920
+  },
+  "transcripts": [
+    {
+      "offset_ms": 7104,
+      "speaker": "human",
+      "text": "It goes around the Earth."
+    },
+    {
+      "offset_ms": 7110,
+      "speaker": "guesser",
+      "text": "Moon"
+    }
+  ],
+  "judge_events": []
+}

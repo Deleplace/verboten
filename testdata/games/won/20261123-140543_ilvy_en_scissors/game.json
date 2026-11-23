@@ -1,0 +1,54 @@
+{
+  "game_id": "iLvy",
+  "outcome": "won",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T14:05:43.01087Z",
+  "ended_at": "2026-11-23T14:05:52.979569Z",
+  "duration_ms": 9968,
+  "target_word": "Scissors",
+  "forbidden_words": [
+    "Cut",
+    "Paper",
+    "Sharp",
+    "Blades"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3426,
+    "last_packet_ms": 9916,
+    "packet_count": 102,
+    "total_bytes": 208896,
+    "audio_duration_ms": 6528
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 8765,
+    "last_packet_ms": 8968,
+    "packet_count": 6,
+    "total_bytes": 44190,
+    "audio_duration_ms": 920
+  },
+  "transcripts": [
+    {
+      "offset_ms": 8760,
+      "speaker": "human",
+      "text": "Do not run while carrying them."
+    },
+    {
+      "offset_ms": 8764,
+      "speaker": "guesser",
+      "text": "Scissors"
+    }
+  ],
+  "judge_events": []
+}

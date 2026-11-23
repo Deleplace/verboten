@@ -1,0 +1,63 @@
+{
+  "game_id": "cT1V",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T13:26:06.128843Z",
+  "ended_at": "2026-11-23T13:26:31.026563Z",
+  "duration_ms": 24897,
+  "target_word": "Clock",
+  "forbidden_words": [
+    "Time",
+    "Watch",
+    "Tick",
+    "Numbers"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3303,
+    "last_packet_ms": 24869,
+    "packet_count": 337,
+    "total_bytes": 690176,
+    "audio_duration_ms": 21568
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 17351,
+    "last_packet_ms": 23884,
+    "packet_count": 8,
+    "total_bytes": 53312,
+    "audio_duration_ms": 1110
+  },
+  "transcripts": [
+    {
+      "offset_ms": 17251,
+      "speaker": "human",
+      "text": "supposed to wake me up in the morning?"
+    },
+    {
+      "offset_ms": 17351,
+      "speaker": "guesser",
+      "text": "Alarm"
+    },
+    {
+      "offset_ms": 23645,
+      "speaker": "human",
+      "text": "Yes, but what from what device?"
+    },
+    {
+      "offset_ms": 23694,
+      "speaker": "guesser",
+      "text": "Clock"
+    }
+  ],
+  "judge_events": []
+}

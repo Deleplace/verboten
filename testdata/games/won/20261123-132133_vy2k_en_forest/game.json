@@ -1,0 +1,53 @@
+{
+  "game_id": "Vy2K",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T13:21:33.73822Z",
+  "ended_at": "2026-11-23T13:21:49.279747Z",
+  "duration_ms": 15541,
+  "target_word": "Forest",
+  "forbidden_words": [
+    "Trees",
+    "Woods",
+    "Green",
+    "Nature"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3234,
+    "last_packet_ms": 15527,
+    "packet_count": 193,
+    "total_bytes": 395264,
+    "audio_duration_ms": 12352
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 14337,
+    "last_packet_ms": 14460,
+    "packet_count": 4,
+    "total_bytes": 38430,
+    "audio_duration_ms": 800
+  },
+  "transcripts": [
+    {
+      "offset_ms": 14244,
+      "speaker": "human",
+      "text": "Those things with trunks and leaves, when you have a lot of them together, it gives"
+    },
+    {
+      "offset_ms": 14337,
+      "speaker": "guesser",
+      "text": "Forest"
+    }
+  ],
+  "judge_events": []
+}

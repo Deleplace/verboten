@@ -1,0 +1,83 @@
+{
+  "game_id": "EYuQ",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T13:20:40.588617Z",
+  "ended_at": "2026-11-23T13:21:07.02915Z",
+  "duration_ms": 26440,
+  "target_word": "Garden",
+  "forbidden_words": [
+    "Flowers",
+    "Plants",
+    "Grow",
+    "Dirt"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3189,
+    "last_packet_ms": 26415,
+    "packet_count": 363,
+    "total_bytes": 743424,
+    "audio_duration_ms": 23232
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 15862,
+    "last_packet_ms": 25768,
+    "packet_count": 25,
+    "total_bytes": 201632,
+    "audio_duration_ms": 4200
+  },
+  "transcripts": [
+    {
+      "offset_ms": 15862,
+      "speaker": "human",
+      "text": "I have my own grass there behind my house."
+    },
+    {
+      "offset_ms": 15862,
+      "speaker": "guesser",
+      "text": "Backyard"
+    },
+    {
+      "offset_ms": 16170,
+      "speaker": "guesser",
+      "text": " or"
+    },
+    {
+      "offset_ms": 16239,
+      "speaker": "guesser",
+      "text": " lawn?"
+    },
+    {
+      "offset_ms": 25159,
+      "speaker": "human",
+      "text": "Yes, but more precisely, it's where I like to relax."
+    },
+    {
+      "offset_ms": 25238,
+      "speaker": "guesser",
+      "text": "garden"
+    },
+    {
+      "offset_ms": 25509,
+      "speaker": "guesser",
+      "text": " or"
+    },
+    {
+      "offset_ms": 25575,
+      "speaker": "guesser",
+      "text": " patio?"
+    }
+  ],
+  "judge_events": []
+}

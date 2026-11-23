@@ -1,0 +1,53 @@
+{
+  "game_id": "Rd5A",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T13:19:11.799883Z",
+  "ended_at": "2026-11-23T13:19:24.866961Z",
+  "duration_ms": 13067,
+  "target_word": "Garden",
+  "forbidden_words": [
+    "Flowers",
+    "Plants",
+    "Grow",
+    "Dirt"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3137,
+    "last_packet_ms": 13014,
+    "packet_count": 155,
+    "total_bytes": 317440,
+    "audio_duration_ms": 9920
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 11863,
+    "last_packet_ms": 12044,
+    "packet_count": 6,
+    "total_bytes": 45150,
+    "audio_duration_ms": 940
+  },
+  "transcripts": [
+    {
+      "offset_ms": 11857,
+      "speaker": "human",
+      "text": "It is where I put some seeds for them to bloom behind my house."
+    },
+    {
+      "offset_ms": 11863,
+      "speaker": "guesser",
+      "text": "Garden"
+    }
+  ],
+  "judge_events": []
+}

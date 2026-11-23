@@ -1,0 +1,64 @@
+{
+  "game_id": "7OQp",
+  "outcome": "won",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T14:05:02.876843Z",
+  "ended_at": "2026-11-23T14:05:22.193038Z",
+  "duration_ms": 19316,
+  "target_word": "Hat",
+  "forbidden_words": [
+    "Head",
+    "Wear",
+    "Cap",
+    "Fashion"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3324,
+    "last_packet_ms": 19254,
+    "packet_count": 249,
+    "total_bytes": 509952,
+    "audio_duration_ms": 15936
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 12260,
+    "last_packet_ms": 18274,
+    "packet_count": 8,
+    "total_bytes": 46084,
+    "audio_duration_ms": 960
+  },
+  "transcripts": [
+    {
+      "offset_ms": 12259,
+      "speaker": "human",
+      "text": "It's the cloth that I put at the top of myself."
+    },
+    {
+      "offset_ms": 12259,
+      "speaker": "guesser",
+      "text": "Shirt"
+    },
+    {
+      "offset_ms": 18111,
+      "speaker": "human",
+      "text": "No, I mean at the very top up."
+    },
+    {
+      "offset_ms": 18113,
+      "speaker": "guesser",
+      "text": "Hat"
+    }
+  ],
+  "judge_events": []
+}

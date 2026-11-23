@@ -1,0 +1,98 @@
+{
+  "game_id": "5c2u",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T13:16:55.371083Z",
+  "ended_at": "2026-11-23T13:17:29.675439Z",
+  "duration_ms": 34304,
+  "target_word": "Garden",
+  "forbidden_words": [
+    "Flowers",
+    "Plants",
+    "Grow",
+    "Dirt"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3169,
+    "last_packet_ms": 34277,
+    "packet_count": 486,
+    "total_bytes": 995328,
+    "audio_duration_ms": 31104
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 8339,
+    "last_packet_ms": 33354,
+    "packet_count": 32,
+    "total_bytes": 234786,
+    "audio_duration_ms": 4891
+  },
+  "transcripts": [
+    {
+      "offset_ms": 8334,
+      "speaker": "human",
+      "text": "It's green behind my house."
+    },
+    {
+      "offset_ms": 8339,
+      "speaker": "guesser",
+      "text": "Trees"
+    },
+    {
+      "offset_ms": 15255,
+      "speaker": "human",
+      "text": "Now it's a flat area with vegetation."
+    },
+    {
+      "offset_ms": 15283,
+      "speaker": "guesser",
+      "text": "Meadow"
+    },
+    {
+      "offset_ms": 20496,
+      "speaker": "human",
+      "text": "No. Um"
+    },
+    {
+      "offset_ms": 20497,
+      "speaker": "guesser",
+      "text": "Yard"
+    },
+    {
+      "offset_ms": 25832,
+      "speaker": "human",
+      "text": "Yes, that's where I"
+    },
+    {
+      "offset_ms": 25914,
+      "speaker": "guesser",
+      "text": "I got"
+    },
+    {
+      "offset_ms": 26091,
+      "speaker": "guesser",
+      "text": " it!"
+    },
+    {
+      "offset_ms": 33031,
+      "speaker": "human",
+      "text": "Put stuff to bloom"
+    },
+    {
+      "offset_ms": 33100,
+      "speaker": "guesser",
+      "text": "Garden"
+    }
+  ],
+  "judge_events": []
+}

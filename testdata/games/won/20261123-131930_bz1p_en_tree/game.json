@@ -1,0 +1,53 @@
+{
+  "game_id": "BZ1P",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T13:19:30.619Z",
+  "ended_at": "2026-11-23T13:19:44.64822Z",
+  "duration_ms": 14029,
+  "target_word": "Tree",
+  "forbidden_words": [
+    "Leaf",
+    "Wood",
+    "Green",
+    "Forest"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3324,
+    "last_packet_ms": 13974,
+    "packet_count": 167,
+    "total_bytes": 342016,
+    "audio_duration_ms": 10688
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 12825,
+    "last_packet_ms": 12839,
+    "packet_count": 5,
+    "total_bytes": 34562,
+    "audio_duration_ms": 720
+  },
+  "transcripts": [
+    {
+      "offset_ms": 12824,
+      "speaker": "human",
+      "text": "Well, it has a trunk and there's a lot of them in the Amazonia."
+    },
+    {
+      "offset_ms": 12825,
+      "speaker": "guesser",
+      "text": "Tree"
+    }
+  ],
+  "judge_events": []
+}

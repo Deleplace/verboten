@@ -1,0 +1,53 @@
+{
+  "game_id": "zJYR",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T13:24:17.694293Z",
+  "ended_at": "2026-11-23T13:24:35.699368Z",
+  "duration_ms": 18005,
+  "target_word": "Jellyfish",
+  "forbidden_words": [
+    "Ocean",
+    "Sting",
+    "Blob",
+    "Water"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3217,
+    "last_packet_ms": 17947,
+    "packet_count": 231,
+    "total_bytes": 473088,
+    "audio_duration_ms": 14784
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 16801,
+    "last_packet_ms": 16982,
+    "packet_count": 5,
+    "total_bytes": 32642,
+    "audio_duration_ms": 680
+  },
+  "transcripts": [
+    {
+      "offset_ms": 16608,
+      "speaker": "human",
+      "text": "When I go on vacation and it hurts me a lot, the legend says I have to pee on it to ease the pain."
+    },
+    {
+      "offset_ms": 16801,
+      "speaker": "guesser",
+      "text": "Jellyfish"
+    }
+  ],
+  "judge_events": []
+}

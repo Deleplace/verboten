@@ -1,0 +1,53 @@
+{
+  "game_id": "3nDh",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T13:25:14.228785Z",
+  "ended_at": "2026-11-23T13:25:25.564338Z",
+  "duration_ms": 11335,
+  "target_word": "Island",
+  "forbidden_words": [
+    "Water",
+    "Beach",
+    "Ocean",
+    "Land"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3203,
+    "last_packet_ms": 11331,
+    "packet_count": 128,
+    "total_bytes": 262144,
+    "audio_duration_ms": 8192
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 10132,
+    "last_packet_ms": 10331,
+    "packet_count": 6,
+    "total_bytes": 40322,
+    "audio_duration_ms": 840
+  },
+  "transcripts": [
+    {
+      "offset_ms": 10132,
+      "speaker": "human",
+      "text": "It is some emerged area in the sea."
+    },
+    {
+      "offset_ms": 10132,
+      "speaker": "guesser",
+      "text": "Island"
+    }
+  ],
+  "judge_events": []
+}

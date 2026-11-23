@@ -1,0 +1,44 @@
+{
+  "game_id": "piyT",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T13:21:55.157574Z",
+  "ended_at": "2026-11-23T13:22:06.840803Z",
+  "duration_ms": 11683,
+  "target_word": "Computer",
+  "forbidden_words": [
+    "Mouse",
+    "Keyboard",
+    "Screen",
+    "Code"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3176,
+    "last_packet_ms": 11629,
+    "packet_count": 133,
+    "total_bytes": 272384,
+    "audio_duration_ms": 8512
+  },
+  "guesser_audio": {
+    "packet_count": 0,
+    "total_bytes": 0,
+    "audio_duration_ms": 0
+  },
+  "transcripts": [],
+  "judge_events": [
+    {
+      "offset_ms": 11681,
+      "timestamp": "2026-11-23T13:22:06.839211Z",
+      "action": "declare_loss",
+      "spoken_word": "ordinateur",
+      "forbidden_word": "Computer",
+      "reason": "translation"
+    }
+  ]
+}

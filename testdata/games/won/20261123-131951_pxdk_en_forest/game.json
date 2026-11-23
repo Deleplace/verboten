@@ -1,0 +1,53 @@
+{
+  "game_id": "pXDK",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T13:19:51.054958Z",
+  "ended_at": "2026-11-23T13:19:57.982843Z",
+  "duration_ms": 6927,
+  "target_word": "Forest",
+  "forbidden_words": [
+    "Trees",
+    "Woods",
+    "Green",
+    "Nature"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3229,
+    "last_packet_ms": 6887,
+    "packet_count": 58,
+    "total_bytes": 118784,
+    "audio_duration_ms": 3712
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 5724,
+    "last_packet_ms": 5944,
+    "packet_count": 7,
+    "total_bytes": 53762,
+    "audio_duration_ms": 1120
+  },
+  "transcripts": [
+    {
+      "offset_ms": 5721,
+      "speaker": "human",
+      "text": "Amazonia"
+    },
+    {
+      "offset_ms": 5724,
+      "speaker": "guesser",
+      "text": "Rainforest"
+    }
+  ],
+  "judge_events": []
+}

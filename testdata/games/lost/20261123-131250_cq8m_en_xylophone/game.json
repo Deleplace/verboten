@@ -1,0 +1,44 @@
+{
+  "game_id": "CQ8m",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T13:12:50.380193Z",
+  "ended_at": "2026-11-23T13:12:57.801632Z",
+  "duration_ms": 7421,
+  "target_word": "Xylophone",
+  "forbidden_words": [
+    "Music",
+    "Hit",
+    "Bars",
+    "Instrument"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3371,
+    "last_packet_ms": 7412,
+    "packet_count": 64,
+    "total_bytes": 131072,
+    "audio_duration_ms": 4096
+  },
+  "guesser_audio": {
+    "packet_count": 0,
+    "total_bytes": 0,
+    "audio_duration_ms": 0
+  },
+  "transcripts": [],
+  "judge_events": [
+    {
+      "offset_ms": 7419,
+      "timestamp": "2026-11-23T13:12:57.799629Z",
+      "action": "declare_loss",
+      "spoken_word": "xylophone",
+      "forbidden_word": "Xylophone",
+      "reason": "exact"
+    }
+  ]
+}
