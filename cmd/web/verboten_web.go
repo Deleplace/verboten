@@ -3,10 +3,7 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"log"
-
-	"google.golang.org/genai"
 
 	"github.com/Deleplace/verboten"
 )
@@ -16,37 +13,23 @@ func main() {
 	const verboseUsage = "log transcribed words spoken by the human player and the AI guesser"
 	flag.BoolVar(&verbose, "verbose", false, verboseUsage)
 	flag.BoolVar(&verbose, "v", false, verboseUsage+" (shorthand)")
+	recordingsDir := flag.String("recordings-dir", verboten.DefaultRecordingsDirForEnv(), "directory for game recordings (empty disables recording; disabled by default on Cloud Run)")
 	flag.Parse()
+
 	ctx := context.Background()
 
-	//
-	// Create the Gemini client
-	//
-	var err error
-	for _, k := range []string{
-		"GOOGLE_API_KEY",
-		"GOOGLE_GENAI_USE_VERTEXAI",
-		"GOOGLE_CLOUD_PROJECT",
-		"GOOGLE_CLOUD_LOCATION",
-	} {
-		// fmt.Printf("%s=%s\n", k, os.Getenv(k))
-		_ = k
-	}
 	client, err := verboten.NewGenAIClient(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
-	if client.ClientConfig().Backend == genai.BackendVertexAI {
-		// fmt.Println("(using VertexAI backend)")
-	} else {
-		// fmt.Println("(using GeminiAPI backend)")
-	}
-	fmt.Println()
 
 	server := verboten.NewServer(client)
 	server.Verbose = verbose
-	err = server.Start(ctx)
-	if err != nil {
+	server.RecordingsDir = *recordingsDir
+	if server.RecordingsDir == "" {
+		log.Printf("Game recording disabled (set VERBOTEN_RECORDINGS_DIR or -recordings-dir to enable)")
+	}
+	if err := server.Start(ctx); err != nil {
 		log.Fatal(err)
 	}
 }

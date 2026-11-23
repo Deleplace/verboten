@@ -73,29 +73,13 @@ var client *genai.Client
 func main() {
 	ctx := context.Background()
 
-	//
-	// Create the Gemini client
-	//
+	// Create the Gemini client (uses GEMINI_API_KEY or GOOGLE_API_KEY).
 	var err error
-	for _, k := range []string{
-		"GOOGLE_API_KEY",
-		"GOOGLE_GENAI_USE_VERTEXAI",
-		"GOOGLE_CLOUD_PROJECT",
-		"GOOGLE_CLOUD_LOCATION",
-	} {
-		// fmt.Printf("%s=%s\n", k, os.Getenv(k))
-		_ = k
-	}
 	client, err = genai.NewClient(ctx, &genai.ClientConfig{
-		// empty ClientConfig automatically uses the env vars listed above
+		Backend: genai.BackendGeminiAPI,
 	})
 	if err != nil {
 		log.Fatal(err)
-	}
-	if client.ClientConfig().Backend == genai.BackendVertexAI {
-		// fmt.Println("(using VertexAI backend)")
-	} else {
-		// fmt.Println("(using GeminiAPI backend)")
 	}
 
 	// Load words from JSON file

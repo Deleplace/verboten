@@ -328,115 +328,115 @@ func assertWAVFile(t *testing.T, path string, wantSampleRate uint32, wantPCM []b
 }
 
 func TestFrenchLanguageConfiguration(t *testing.T) {
-	for _, backend := range []genai.Backend{genai.BackendGeminiAPI, genai.BackendVertexAI} {
-		t.Run(backend.String(), func(t *testing.T) {
-			var (
-				mu     sync.Mutex
-				setups []string
-				bothUp = make(chan struct{})
-			)
+	var (
+		mu     sync.Mutex
+		setups []string
+		bothUp = make(chan struct{})
+	)
 
-			fakeGemini := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				c, err := upgrader.Upgrade(w, r, nil)
-				if err != nil {
-					t.Errorf("fake gemini upgrade: %v", err)
-					return
-				}
-				defer c.Close()
+	fakeGemini := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("fake gemini upgrade: %v", err)
+			return
+		}
+		defer c.Close()
 
-				_, setupBytes, err := c.ReadMessage()
-				if err != nil {
-					t.Errorf("fake gemini read setup: %v", err)
-					return
-				}
-				_ = c.WriteMessage(websocket.TextMessage, []byte(`{"setupComplete":{}}`))
+		_, setupBytes, err := c.ReadMessage()
+		if err != nil {
+			t.Errorf("fake gemini read setup: %v", err)
+			return
+		}
+		_ = c.WriteMessage(websocket.TextMessage, []byte(`{"setupComplete":{}}`))
 
-				mu.Lock()
-				setups = append(setups, string(setupBytes))
-				if len(setups) == 2 {
-					close(bothUp)
-				}
-				mu.Unlock()
+		mu.Lock()
+		setups = append(setups, string(setupBytes))
+		if len(setups) == 2 {
+			close(bothUp)
+		}
+		mu.Unlock()
 
-				for {
-					if _, _, err := c.ReadMessage(); err != nil {
-						return
-					}
-				}
-			}))
-			defer fakeGemini.Close()
-
-			wsBaseURL := "ws://" + strings.TrimPrefix(fakeGemini.URL, "http://")
-			cfg := &genai.ClientConfig{
-				Backend: backend,
-				HTTPOptions: genai.HTTPOptions{
-					BaseURL: wsBaseURL,
-				},
+		for {
+			if _, _, err := c.ReadMessage(); err != nil {
+				return
 			}
-			if backend == genai.BackendVertexAI {
-				cfg.HTTPOptions.APIVersion = "v1beta1"
-			} else {
-				cfg.APIKey = "test-api-key"
-				cfg.HTTPOptions.APIVersion = "v1beta"
-			}
+		}
+	}))
+	defer fakeGemini.Close()
 
-			client, err := genai.NewClient(context.Background(), cfg)
-			if err != nil {
-				t.Fatalf("NewClient: %v", err)
-			}
+	wsBaseURL := "ws://" + strings.TrimPrefix(fakeGemini.URL, "http://")
+	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+		APIKey:  "test-api-key",
+		Backend: genai.BackendGeminiAPI,
+		HTTPOptions: genai.HTTPOptions{
+			BaseURL:    wsBaseURL,
+			APIVersion: "v1beta",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
 
-			gameServer := NewServer(client)
-			gameServer.RecordingsDir = t.TempDir()
-			appServer := httptest.NewServer(http.HandlerFunc(gameServer.liveGame))
-			defer appServer.Close()
+	gameServer := NewServer(client)
+	gameServer.RecordingsDir = t.TempDir()
+	handlerDone := make(chan struct{})
+	appServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(handlerDone)
+		gameServer.liveGame(w, r)
+	}))
+	defer appServer.Close()
 
-			browserURL := "ws://" + strings.TrimPrefix(appServer.URL, "http://") +
-				"/live/fr?target=Pizza&forbidden=Pizza&forbidden=Fromage&forbidden=P%C3%A2te"
-			browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, nil)
-			if err != nil {
-				t.Fatalf("dial liveGame: %v", err)
-			}
-			defer browserConn.Close()
+	browserURL := "ws://" + strings.TrimPrefix(appServer.URL, "http://") +
+		"/live/fr?target=Pizza&forbidden=Pizza&forbidden=Fromage&forbidden=P%C3%A2te"
+	browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, nil)
+	if err != nil {
+		t.Fatalf("dial liveGame: %v", err)
+	}
+	defer func() {
+		_ = browserConn.Close()
+		select {
+		case <-handlerDone:
+		case <-time.After(3 * time.Second):
+		}
+	}()
 
-			select {
-			case <-bothUp:
-			case <-time.After(3 * time.Second):
-				t.Fatal("timed out waiting for both French Live sessions")
-			}
+	select {
+	case <-bothUp:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for both French Live sessions")
+	}
 
-			mu.Lock()
-			defer mu.Unlock()
-			for i, setup := range setups {
-				if !strings.Contains(setup, `"languageCode":"fr-FR"`) {
-					t.Errorf("session %d missing speechConfig languageCode fr-FR: %s", i, setup)
-				}
-				isJudge := strings.Contains(setup, declareLossFuncName)
-				if isJudge {
-					if !strings.Contains(setup, "Expect French spoken input") {
-						t.Errorf("judge setup missing French spoken input instruction: %s", setup)
-					}
-					if !strings.Contains(setup, "EXACT TRANSLATION OF THE TARGET WORD IN ANOTHER LANGUAGE") {
-						t.Errorf("judge setup missing target-word exact translation loss rule: %s", setup)
-					}
-					if !strings.Contains(setup, "Target word to guess: Pizza") {
-						t.Errorf("judge setup missing target word: %s", setup)
-					}
-					if !strings.Contains(setup, "Do NOT check or penalize translations in other languages for the other forbidden words (Fromage, Pâte)") {
-						t.Errorf("judge setup missing exclusion of other forbidden words from translation checks: %s", setup)
-					}
-					if !strings.Contains(setup, `"translation"`) {
-						t.Errorf("judge setup missing translation reason enum in tool declaration: %s", setup)
-					}
-				} else {
-					if !strings.Contains(setup, "entendre du français en entrée audio") {
-						t.Errorf("guesser setup missing French spoken input instruction: %s", setup)
-					}
-					if backend == genai.BackendVertexAI && !strings.Contains(setup, `"languageCodes":["fr-FR"]`) {
-						t.Errorf("vertex guesser setup missing transcription languageCodes fr-FR: %s", setup)
-					}
-				}
+	mu.Lock()
+	defer mu.Unlock()
+	for i, setup := range setups {
+		if !strings.Contains(setup, `"languageCode":"fr-FR"`) {
+			t.Errorf("session %d missing speechConfig languageCode fr-FR: %s", i, setup)
+		}
+		if !strings.Contains(setup, DefaultLiveModel) {
+			t.Errorf("session %d missing default live model %q: %s", i, DefaultLiveModel, setup)
+		}
+		isJudge := strings.Contains(setup, declareLossFuncName)
+		if isJudge {
+			if !strings.Contains(setup, "Expect French spoken input") {
+				t.Errorf("judge setup missing French spoken input instruction: %s", setup)
 			}
-		})
+			if !strings.Contains(setup, "EXACT TRANSLATION OF THE TARGET WORD IN ANOTHER LANGUAGE") {
+				t.Errorf("judge setup missing target-word exact translation loss rule: %s", setup)
+			}
+			if !strings.Contains(setup, "Target word to guess: Pizza") {
+				t.Errorf("judge setup missing target word: %s", setup)
+			}
+			if !strings.Contains(setup, "Do NOT check or penalize translations in other languages for the other forbidden words (Fromage, Pâte)") {
+				t.Errorf("judge setup missing exclusion of other forbidden words from translation checks: %s", setup)
+			}
+			if !strings.Contains(setup, `"translation"`) {
+				t.Errorf("judge setup missing translation reason enum in tool declaration: %s", setup)
+			}
+		} else {
+			if !strings.Contains(setup, "entendre du français en entrée audio") {
+				t.Errorf("guesser setup missing French spoken input instruction: %s", setup)
+			}
+		}
 	}
 }
 
@@ -1120,9 +1120,11 @@ func TestRecordedGameOutcomes(t *testing.T) {
 	}
 }
 
-func TestNewGenAIClientDefaultsToV1BetaForGeminiAPI(t *testing.T) {
+func TestNewGenAIClientForcesGeminiAPIV1Beta(t *testing.T) {
 	t.Setenv("GOOGLE_API_KEY", "test-key")
-	t.Setenv("GOOGLE_GENAI_USE_VERTEXAI", "")
+	// Even if Vertex env vars are set, Verboten must use BackendGeminiAPI + v1beta
+	// because gemini-3.1-flash-live-preview and gemini-decision-1 require Gemini Developer API.
+	t.Setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
 	t.Setenv("GOOGLE_GENAI_USE_ENTERPRISE", "")
 	t.Setenv("GOOGLE_GENAI_API_VERSION", "")
 
@@ -1130,7 +1132,46 @@ func TestNewGenAIClientDefaultsToV1BetaForGeminiAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewGenAIClient: %v", err)
 	}
+	if got := client.ClientConfig().Backend; got != genai.BackendGeminiAPI {
+		t.Fatalf("Backend = %v, want %v", got, genai.BackendGeminiAPI)
+	}
 	if got := client.ClientConfig().HTTPOptions.APIVersion; got != "v1beta" {
 		t.Fatalf("APIVersion = %q, want %q", got, "v1beta")
 	}
+}
+
+func TestDefaultRecordingsDirForEnv(t *testing.T) {
+	unsetEnv := func(t *testing.T, key string) {
+		t.Helper()
+		t.Setenv(key, "")
+		_ = os.Unsetenv(key)
+	}
+	t.Run("local_default", func(t *testing.T) {
+		unsetEnv(t, "K_SERVICE")
+		unsetEnv(t, "VERBOTEN_RECORDINGS_DIR")
+		if got := DefaultRecordingsDirForEnv(); got != DefaultRecordingsDir {
+			t.Errorf("got %q, want %q", got, DefaultRecordingsDir)
+		}
+	})
+	t.Run("cloud_run_disabled_by_default", func(t *testing.T) {
+		t.Setenv("K_SERVICE", "verboten")
+		unsetEnv(t, "VERBOTEN_RECORDINGS_DIR")
+		if got := DefaultRecordingsDirForEnv(); got != "" {
+			t.Errorf("got %q, want empty string", got)
+		}
+	})
+	t.Run("cloud_run_explicit_dir", func(t *testing.T) {
+		t.Setenv("K_SERVICE", "verboten")
+		t.Setenv("VERBOTEN_RECORDINGS_DIR", "/mnt/recordings")
+		if got := DefaultRecordingsDirForEnv(); got != "/mnt/recordings" {
+			t.Errorf("got %q, want %q", got, "/mnt/recordings")
+		}
+	})
+	t.Run("explicit_off", func(t *testing.T) {
+		t.Setenv("K_SERVICE", "")
+		t.Setenv("VERBOTEN_RECORDINGS_DIR", "off")
+		if got := DefaultRecordingsDirForEnv(); got != "" {
+			t.Errorf("got %q, want empty string", got)
+		}
+	})
 }

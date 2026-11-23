@@ -25,31 +25,61 @@ import (
 	"google.golang.org/genai"
 )
 
+const DefaultLiveModel = "gemini-3.1-flash-live-preview"
+
 type VerbotenGameServer struct {
 	genaiClient      *genai.Client
 	Verbose          bool
+	LiveModel        string
 	RecordingsDir    string
 	sameRootProbFunc func(ctx context.Context, lang, spokenWord, forbiddenWord string) (float64, error)
 }
 
 func NewServer(genaiClient *genai.Client) *VerbotenGameServer {
+	liveModel := strings.TrimSpace(os.Getenv("VERBOTEN_LIVE_MODEL"))
+	if liveModel == "" {
+		liveModel = DefaultLiveModel
+	}
 	return &VerbotenGameServer{
 		genaiClient:   genaiClient,
-		RecordingsDir: DefaultRecordingsDir,
+		LiveModel:     liveModel,
+		RecordingsDir: DefaultRecordingsDirForEnv(),
 	}
 }
 
+// DefaultRecordingsDirForEnv returns where game recordings should be written.
+//   - If VERBOTEN_RECORDINGS_DIR is set: uses that path (or disables recording if "", "off", or "none").
+//   - On Cloud Run (K_SERVICE set): disables local recording by default so ephemeral in-memory
+//     filesystem writes cannot accumulate and exhaust container RAM.
+//   - Locally: defaults to DefaultRecordingsDir ("recordings").
+func DefaultRecordingsDirForEnv() string {
+	if raw, ok := os.LookupEnv("VERBOTEN_RECORDINGS_DIR"); ok {
+		v := strings.TrimSpace(raw)
+		if v == "" || strings.EqualFold(v, "off") || strings.EqualFold(v, "none") {
+			return ""
+		}
+		return v
+	}
+	if os.Getenv("K_SERVICE") != "" {
+		return ""
+	}
+	return DefaultRecordingsDir
+}
+
 // NewGenAIClient creates a genai.Client configured for Verboten's Live and Decisions APIs.
-// Since google.golang.org/genai v1.79+, Gemini Developer API defaults to "v1", whereas
-// BidiGenerateContent (Live API) and /decisions (Gemini Decision 1) require "v1beta".
+// Both gemini-3.1-flash-live-preview (BidiGenerateContent) and gemini-decision-1 (/decisions)
+// require the Gemini Developer API (BackendGeminiAPI) on API version "v1beta"
+// (authenticated via GEMINI_API_KEY or GOOGLE_API_KEY).
 func NewGenAIClient(ctx context.Context) (*genai.Client, error) {
-	cfg := &genai.ClientConfig{}
-	useVertex := strings.EqualFold(os.Getenv("GOOGLE_GENAI_USE_VERTEXAI"), "true") ||
-		os.Getenv("GOOGLE_GENAI_USE_VERTEXAI") == "1" ||
-		strings.EqualFold(os.Getenv("GOOGLE_GENAI_USE_ENTERPRISE"), "true") ||
-		os.Getenv("GOOGLE_GENAI_USE_ENTERPRISE") == "1"
-	if !useVertex && os.Getenv("GOOGLE_GENAI_API_VERSION") == "" {
-		cfg.HTTPOptions.APIVersion = "v1beta"
+	apiVersion := "v1beta"
+	if v := strings.TrimSpace(os.Getenv("GOOGLE_GENAI_API_VERSION")); v != "" {
+		apiVersion = v
+	}
+	cfg := &genai.ClientConfig{
+		Backend: genai.BackendGeminiAPI,
+		HTTPOptions: genai.HTTPOptions{
+			APIVersion: apiVersion,
+		},
 	}
 	return genai.NewClient(ctx, cfg)
 }
@@ -255,24 +285,26 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	var model string
-	if vg.genaiClient.ClientConfig().Backend == genai.BackendVertexAI {
-		model = "gemini-live-2.5-flash-preview-native-audio-09-2025"
-	} else {
-		model = "gemini-3.1-flash-live-preview"
+	model := strings.TrimSpace(vg.LiveModel)
+	if model == "" {
+		model = DefaultLiveModel
 	}
 	log.Printf("Using model %q", model)
 
-	recorder, err := newGameRecorder(vg.RecordingsDir, gameID, lang, languageCode, model, targetWord, otherForbiddenWords)
-	if err != nil {
-		log.Printf("Game %s recording disabled: %v", gameID, err)
-	} else {
-		log.Printf("Recording game %s to %s", gameID, recorder.Dir())
-		defer func() {
-			if err := recorder.Close(); err != nil {
-				log.Printf("Game %s close recorder error: %v", gameID, err)
-			}
-		}()
+	var recorder *gameRecorder
+	if vg.RecordingsDir != "" {
+		var err error
+		recorder, err = newGameRecorder(vg.RecordingsDir, gameID, lang, languageCode, model, targetWord, otherForbiddenWords)
+		if err != nil {
+			log.Printf("Game %s recording disabled: %v", gameID, err)
+		} else {
+			log.Printf("Recording game %s to %s", gameID, recorder.Dir())
+			defer func() {
+				if err := recorder.Close(); err != nil {
+					log.Printf("Game %s close recorder error: %v", gameID, err)
+				}
+			}()
+		}
 	}
 
 	var loopsWG sync.WaitGroup
@@ -300,14 +332,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	var audioTranscriptionConfig *genai.AudioTranscriptionConfig
-	if vg.genaiClient.ClientConfig().Backend == genai.BackendVertexAI {
-		audioTranscriptionConfig = &genai.AudioTranscriptionConfig{
-			LanguageCodes: []string{languageCode},
-		}
-	} else {
-		audioTranscriptionConfig = &genai.AudioTranscriptionConfig{}
-	}
+	audioTranscriptionConfig := &genai.AudioTranscriptionConfig{}
 
 	// Gemini Live session 1 (Guesser): listens to the human and guesses the secret word,
 	// without knowing any of the forbidden words.

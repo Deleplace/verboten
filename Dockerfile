@@ -18,17 +18,15 @@ COPY . .
 # CGO_ENABLED=0 is used to build a statically linked binary.
 RUN CGO_ENABLED=0 go build -o /server ./cmd/web
 
-# Use a minimal, secure base image for the final production image.
-FROM gcr.io/distroless/base-debian11
+# Use a minimal, secure, non-root base image with up-to-date CA certificates.
+FROM gcr.io/distroless/static-debian12:nonroot
 
 # Set the working directory inside the container.
 WORKDIR /app
 
-# Copy the built binary from the builder stage.
-COPY --from=builder /server .
-
-# Copy the testdata directory which contains the images for the game.
-COPY --from=builder /app/assets ./assets
+# Copy the built binary and static assets from the builder stage.
+COPY --from=builder /server /app/server
+COPY --from=builder /app/assets /app/assets
 
 # Set the command to run the application.
 CMD ["/app/server"]
