@@ -869,6 +869,13 @@
                 stopPlayback();
             }
             if (ws) {
+                if (ws.readyState === WebSocket.OPEN) {
+                    try {
+                        ws.send(JSON.stringify({ outcome: isWin ? 'won' : 'lost' }));
+                    } catch (e) {
+                        console.debug('send outcome error:', e);
+                    }
+                }
                 ws.close();
             }
             console.log(message);

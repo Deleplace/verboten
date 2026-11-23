@@ -129,6 +129,10 @@ type judgeMessage struct {
 	Judge *judgeVerdict `json:"judge"`
 }
 
+type clientControlMessage struct {
+	Outcome string `json:"outcome"`
+}
+
 type judgeVerdict struct {
 	Lost          bool   `json:"lost"`
 	ForbiddenWord string `json:"forbiddenWord,omitempty"`
@@ -543,6 +547,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 							return
 						}
 						recorder.RecordJudgeEvent(fc.Name, false, spokenWord, forbiddenWord, reason, decisionProb)
+						recorder.SetOutcome(OutcomeLost)
 						if reason != "" {
 							log.Printf("Game %s Judge declared loss (%s): spoken=%q forbidden=%q", gameID, reason, spokenWord, forbiddenWord)
 						} else {
@@ -584,6 +589,17 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 		}
 		if gameOver.Load() {
 			break
+		}
+
+		var ctrl clientControlMessage
+		if err := json.Unmarshal(message, &ctrl); err == nil && ctrl.Outcome != "" {
+			switch ctrl.Outcome {
+			case OutcomeWon, OutcomeLost, OutcomeAbandoned:
+				recorder.SetOutcome(ctrl.Outcome)
+				gameOver.Store(true)
+				return
+			}
+			continue
 		}
 
 		var realtimeInput genai.LiveRealtimeInput

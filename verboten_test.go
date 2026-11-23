@@ -257,6 +257,9 @@ func TestDoubleLivestreamJudgeAndGuesser(t *testing.T) {
 	if err := json.Unmarshal(metaBytes, &rec); err != nil {
 		t.Fatalf("unmarshal game.json: %v", err)
 	}
+	if rec.Outcome != OutcomeLost {
+		t.Errorf("recorded outcome = %q, want %q", rec.Outcome, OutcomeLost)
+	}
 	if rec.TargetWord != "lemon" {
 		t.Errorf("recorded target_word = %q, want %q", rec.TargetWord, "lemon")
 	}
@@ -669,6 +672,9 @@ func TestDecisionSameRootFilteringInLiveGame(t *testing.T) {
 	if err := json.Unmarshal(rec, &gr); err != nil {
 		t.Fatalf("unmarshal game.json: %v", err)
 	}
+	if gr.Outcome != OutcomeLost {
+		t.Errorf("recorded outcome = %q, want %q", gr.Outcome, OutcomeLost)
+	}
 	if len(gr.JudgeEvents) != 3 {
 		t.Fatalf("expected 3 judge events, got %+v", gr.JudgeEvents)
 	}
@@ -909,6 +915,206 @@ func TestExactMatchWithArticleSkipsDecision1InLiveGame(t *testing.T) {
 			callMu.Unlock()
 			if gotCalls != tc.wantDecisionCalls {
 				t.Errorf("Decision 1 calls = %d, want %d", gotCalls, tc.wantDecisionCalls)
+			}
+		})
+	}
+}
+
+func TestRecordedGameOutcomes(t *testing.T) {
+	cases := []struct {
+		name           string
+		guesserReplies []string
+		sendOutcomeMsg string
+		wantOutcome    string
+	}{
+		{
+			name: "explicit_won",
+			guesserReplies: []string{
+				`{"serverContent":{"outputTranscription":{"text":"Lemon"}}}`,
+			},
+			sendOutcomeMsg: `{"outcome":"won"}`,
+			wantOutcome:    OutcomeWon,
+		},
+		{
+			name: "inferred_won_chunked_transcript",
+			guesserReplies: []string{
+				`{"serverContent":{"outputTranscription":{"text":"Lem"}}}`,
+				`{"serverContent":{"outputTranscription":{"text":"on?"}}}`,
+			},
+			wantOutcome: OutcomeWon,
+		},
+		{
+			name: "abandoned",
+			guesserReplies: []string{
+				`{"serverContent":{"outputTranscription":{"text":"Orange"}}}`,
+			},
+			wantOutcome: OutcomeAbandoned,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			type capturedSession struct {
+				isJudge  bool
+				incoming chan string
+				conn     *websocket.Conn
+			}
+			var (
+				mu       sync.Mutex
+				sessions []*capturedSession
+				bothUp   = make(chan struct{})
+			)
+
+			fakeGemini := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				c, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					t.Errorf("fake gemini upgrade: %v", err)
+					return
+				}
+				_, setupBytes, err := c.ReadMessage()
+				if err != nil {
+					c.Close()
+					return
+				}
+				sess := &capturedSession{
+					isJudge:  strings.Contains(string(setupBytes), declareLossFuncName),
+					incoming: make(chan string, 10),
+					conn:     c,
+				}
+				_ = c.WriteMessage(websocket.TextMessage, []byte(`{"setupComplete":{}}`))
+
+				mu.Lock()
+				sessions = append(sessions, sess)
+				if len(sessions) == 2 {
+					close(bothUp)
+				}
+				mu.Unlock()
+
+				for {
+					_, msg, err := c.ReadMessage()
+					if err != nil {
+						return
+					}
+					sess.incoming <- string(msg)
+				}
+			}))
+			defer fakeGemini.Close()
+
+			client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+				APIKey:  "test-api-key",
+				Backend: genai.BackendGeminiAPI,
+				HTTPOptions: genai.HTTPOptions{
+					BaseURL:    "ws://" + strings.TrimPrefix(fakeGemini.URL, "http://"),
+					APIVersion: "v1beta",
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+
+			recordingsDir := t.TempDir()
+			gameServer := NewServer(client)
+			gameServer.RecordingsDir = recordingsDir
+
+			handlerDone := make(chan struct{})
+			appServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer close(handlerDone)
+				gameServer.liveGame(w, r)
+			}))
+			defer appServer.Close()
+
+			browserURL := "ws://" + strings.TrimPrefix(appServer.URL, "http://") +
+				"/live/en?target=Lemon&forbidden=Lemon&forbidden=Yellow"
+			browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, nil)
+			if err != nil {
+				t.Fatalf("dial liveGame: %v", err)
+			}
+			defer browserConn.Close()
+
+			select {
+			case <-bothUp:
+			case <-time.After(3 * time.Second):
+				t.Fatal("timed out waiting for both sessions")
+			}
+
+			mu.Lock()
+			var guesserSess, judgeSess *capturedSession
+			for _, s := range sessions {
+				if s.isJudge {
+					judgeSess = s
+				} else {
+					guesserSess = s
+				}
+			}
+			mu.Unlock()
+			defer guesserSess.conn.Close()
+			defer judgeSess.conn.Close()
+
+			// Drain initial setupComplete.
+			_ = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+			if _, _, err := browserConn.ReadMessage(); err != nil {
+				t.Fatalf("read setupComplete: %v", err)
+			}
+
+			for _, reply := range tc.guesserReplies {
+				if err := guesserSess.conn.WriteMessage(websocket.TextMessage, []byte(reply)); err != nil {
+					t.Fatalf("guesser write reply: %v", err)
+				}
+				_ = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+				if _, _, err := browserConn.ReadMessage(); err != nil {
+					t.Fatalf("browser read guesser reply: %v", err)
+				}
+			}
+
+			if tc.sendOutcomeMsg != "" {
+				if err := browserConn.WriteMessage(websocket.TextMessage, []byte(tc.sendOutcomeMsg)); err != nil {
+					t.Fatalf("browser write outcome: %v", err)
+				}
+			} else {
+				_ = browserConn.Close()
+			}
+
+			select {
+			case <-handlerDone:
+			case <-time.After(3 * time.Second):
+				t.Fatal("timed out waiting for liveGame handler to finish")
+			}
+
+			// Client control messages must never be forwarded to Gemini sessions.
+			select {
+			case leaked := <-guesserSess.incoming:
+				t.Errorf("guesser unexpectedly received control message: %s", leaked)
+			default:
+			}
+			select {
+			case leaked := <-judgeSess.incoming:
+				t.Errorf("judge unexpectedly received control message: %s", leaked)
+			default:
+			}
+
+			entries, err := os.ReadDir(recordingsDir)
+			if err != nil || len(entries) != 1 {
+				t.Fatalf("expected 1 recording dir, got %d (err=%v)", len(entries), err)
+			}
+			gameDir := filepath.Join(recordingsDir, entries[0].Name())
+			metaBytes, err := os.ReadFile(filepath.Join(gameDir, "game.json"))
+			if err != nil {
+				t.Fatalf("read game.json: %v", err)
+			}
+			var rec GameRecording
+			if err := json.Unmarshal(metaBytes, &rec); err != nil {
+				t.Fatalf("unmarshal game.json: %v", err)
+			}
+			if rec.Outcome != tc.wantOutcome {
+				t.Errorf("recorded outcome = %q, want %q", rec.Outcome, tc.wantOutcome)
+			}
+
+			eventsBytes, err := os.ReadFile(filepath.Join(gameDir, "events.jsonl"))
+			if err != nil {
+				t.Fatalf("read events.jsonl: %v", err)
+			}
+			if !strings.Contains(string(eventsBytes), `"type":"outcome"`) || !strings.Contains(string(eventsBytes), `"outcome":"`+tc.wantOutcome+`"`) {
+				t.Errorf("events.jsonl missing outcome event %q:\n%s", tc.wantOutcome, eventsBytes)
 			}
 		})
 	}

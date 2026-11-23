@@ -16,6 +16,10 @@ import (
 const (
 	DefaultRecordingsDir = "recordings"
 
+	OutcomeWon       = "won"
+	OutcomeLost      = "lost"
+	OutcomeAbandoned = "abandoned"
+
 	defaultAudioSampleRate    = 24000
 	defaultAudioBitsPerSample = 16
 	defaultAudioChannels      = 1
@@ -25,6 +29,7 @@ const (
 // GameRecording is persisted as game.json in each recorded game folder.
 type GameRecording struct {
 	GameID         string              `json:"game_id"`
+	Outcome        string              `json:"outcome"`
 	Language       string              `json:"language"`
 	LanguageCode   string              `json:"language_code"`
 	Model          string              `json:"model"`
@@ -87,6 +92,7 @@ type RecordingEvent struct {
 	ForbiddenWord       string   `json:"forbidden_word,omitempty"`
 	Reason              string   `json:"reason,omitempty"`
 	DecisionProbability *float64 `json:"decision_probability,omitempty"`
+	Outcome             string   `json:"outcome,omitempty"`
 }
 
 type wavTrackRecorder struct {
@@ -337,6 +343,50 @@ func (r *gameRecorder) RecordJudgeEvent(action string, ignored bool, spokenWord,
 	})
 }
 
+func (r *gameRecorder) SetOutcome(outcome string) {
+	if r == nil || outcome == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return
+	}
+	// A confirmed Judge loss takes precedence over any later client outcome message.
+	if r.recording.Outcome == OutcomeLost && outcome != OutcomeLost {
+		return
+	}
+	if r.recording.Outcome == outcome {
+		return
+	}
+	r.recording.Outcome = outcome
+	r.appendEventLocked(RecordingEvent{
+		OffsetMs: r.offsetMsLocked(time.Now().UTC()),
+		Type:     "outcome",
+		Outcome:  outcome,
+	})
+}
+
+func (r *gameRecorder) inferOutcomeLocked() string {
+	for _, ev := range r.recording.JudgeEvents {
+		if !ev.Ignored && ev.Action == declareLossFuncName {
+			return OutcomeLost
+		}
+	}
+	if normTarget := normalizeWord(r.recording.TargetWord); normTarget != "" {
+		var guesserSpeech strings.Builder
+		for _, tr := range r.recording.Transcripts {
+			if tr.Speaker == "guesser" {
+				guesserSpeech.WriteString(tr.Text)
+			}
+		}
+		if strings.Contains(normalizeWord(guesserSpeech.String()), normTarget) {
+			return OutcomeWon
+		}
+	}
+	return OutcomeAbandoned
+}
+
 func (r *gameRecorder) Close() error {
 	if r == nil {
 		return nil
@@ -346,9 +396,17 @@ func (r *gameRecorder) Close() error {
 	if r.closed {
 		return nil
 	}
+	endedAt := time.Now().UTC()
+	if r.recording.Outcome == "" {
+		r.recording.Outcome = r.inferOutcomeLocked()
+		r.appendEventLocked(RecordingEvent{
+			OffsetMs: r.offsetMsLocked(endedAt),
+			Type:     "outcome",
+			Outcome:  r.recording.Outcome,
+		})
+	}
 	r.closed = true
 
-	endedAt := time.Now().UTC()
 	r.recording.EndedAt = endedAt
 	r.recording.DurationMs = endedAt.Sub(r.startedAt).Milliseconds()
 
