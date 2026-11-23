@@ -47,21 +47,24 @@ func NewServer(genaiClient *genai.Client) *VerbotenGameServer {
 	}
 }
 
-// DefaultRecordingsDirForEnv returns where game recordings should be written.
-//   - If VERBOTEN_RECORDINGS_DIR is set: uses that path (or disables recording if "", "off", or "none").
-//   - On Cloud Run (K_SERVICE set): disables local recording by default so ephemeral in-memory
-//     filesystem writes cannot accumulate and exhaust container RAM.
-//   - Locally: defaults to DefaultRecordingsDir ("recordings").
-func DefaultRecordingsDirForEnv() string {
-	if raw, ok := os.LookupEnv("VERBOTEN_RECORDINGS_DIR"); ok {
-		v := strings.TrimSpace(raw)
-		if v == "" || strings.EqualFold(v, "off") || strings.EqualFold(v, "none") {
-			return ""
-		}
-		return v
+func recordGamesEnabled() bool {
+	switch strings.TrimSpace(os.Getenv("RECORD_GAMES")) {
+	case "1", "TRUE", "true":
+		return true
+	default:
+		return false
 	}
-	if os.Getenv("K_SERVICE") != "" {
+}
+
+// DefaultRecordingsDirForEnv returns where game recordings should be written.
+// Recording is disabled unless RECORD_GAMES is "1", "TRUE", or "true".
+// When enabled, VERBOTEN_RECORDINGS_DIR can optionally override DefaultRecordingsDir ("recordings").
+func DefaultRecordingsDirForEnv() string {
+	if !recordGamesEnabled() {
 		return ""
+	}
+	if dir := strings.TrimSpace(os.Getenv("VERBOTEN_RECORDINGS_DIR")); dir != "" {
+		return dir
 	}
 	return DefaultRecordingsDir
 }

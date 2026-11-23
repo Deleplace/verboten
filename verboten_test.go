@@ -1146,32 +1146,41 @@ func TestDefaultRecordingsDirForEnv(t *testing.T) {
 		t.Setenv(key, "")
 		_ = os.Unsetenv(key)
 	}
-	t.Run("local_default", func(t *testing.T) {
-		unsetEnv(t, "K_SERVICE")
-		unsetEnv(t, "VERBOTEN_RECORDINGS_DIR")
-		if got := DefaultRecordingsDirForEnv(); got != DefaultRecordingsDir {
-			t.Errorf("got %q, want %q", got, DefaultRecordingsDir)
-		}
-	})
-	t.Run("cloud_run_disabled_by_default", func(t *testing.T) {
-		t.Setenv("K_SERVICE", "verboten")
-		unsetEnv(t, "VERBOTEN_RECORDINGS_DIR")
-		if got := DefaultRecordingsDirForEnv(); got != "" {
-			t.Errorf("got %q, want empty string", got)
-		}
-	})
-	t.Run("cloud_run_explicit_dir", func(t *testing.T) {
-		t.Setenv("K_SERVICE", "verboten")
-		t.Setenv("VERBOTEN_RECORDINGS_DIR", "/mnt/recordings")
-		if got := DefaultRecordingsDirForEnv(); got != "/mnt/recordings" {
-			t.Errorf("got %q, want %q", got, "/mnt/recordings")
-		}
-	})
-	t.Run("explicit_off", func(t *testing.T) {
-		t.Setenv("K_SERVICE", "")
-		t.Setenv("VERBOTEN_RECORDINGS_DIR", "off")
-		if got := DefaultRecordingsDirForEnv(); got != "" {
-			t.Errorf("got %q, want empty string", got)
-		}
-	})
+
+	cases := []struct {
+		name        string
+		recordGames *string // nil means unset
+		customDir   string
+		want        string
+	}{
+		{name: "absent", recordGames: nil, want: ""},
+		{name: "empty", recordGames: genai.Ptr(""), want: ""},
+		{name: "zero", recordGames: genai.Ptr("0"), want: ""},
+		{name: "false", recordGames: genai.Ptr("false"), want: ""},
+		{name: "other_value", recordGames: genai.Ptr("yes"), want: ""},
+		{name: "mixed_case_True", recordGames: genai.Ptr("True"), want: ""},
+		{name: "absent_with_custom_dir", recordGames: nil, customDir: "/mnt/recordings", want: ""},
+		{name: "one", recordGames: genai.Ptr("1"), want: DefaultRecordingsDir},
+		{name: "TRUE", recordGames: genai.Ptr("TRUE"), want: DefaultRecordingsDir},
+		{name: "true", recordGames: genai.Ptr("true"), want: DefaultRecordingsDir},
+		{name: "enabled_with_custom_dir", recordGames: genai.Ptr("1"), customDir: "/mnt/recordings", want: "/mnt/recordings"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.recordGames == nil {
+				unsetEnv(t, "RECORD_GAMES")
+			} else {
+				t.Setenv("RECORD_GAMES", *tc.recordGames)
+			}
+			if tc.customDir == "" {
+				unsetEnv(t, "VERBOTEN_RECORDINGS_DIR")
+			} else {
+				t.Setenv("VERBOTEN_RECORDINGS_DIR", tc.customDir)
+			}
+			if got := DefaultRecordingsDirForEnv(); got != tc.want {
+				t.Errorf("DefaultRecordingsDirForEnv() = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }
