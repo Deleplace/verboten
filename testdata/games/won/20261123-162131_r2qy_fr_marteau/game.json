@@ -1,0 +1,54 @@
+{
+  "game_id": "r2QY",
+  "outcome": "won",
+  "language": "fr",
+  "language_code": "fr-FR",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T16:21:31.859254Z",
+  "ended_at": "2026-11-23T16:21:43.694345Z",
+  "duration_ms": 11835,
+  "target_word": "Marteau",
+  "forbidden_words": [
+    "Clou",
+    "Outil",
+    "Frapper",
+    "Bois"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3005,
+    "last_packet_ms": 11793,
+    "packet_count": 138,
+    "total_bytes": 282624,
+    "audio_duration_ms": 8832
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 10630,
+    "last_packet_ms": 10853,
+    "packet_count": 6,
+    "total_bytes": 39362,
+    "audio_duration_ms": 820
+  },
+  "transcripts": [
+    {
+      "offset_ms": 10527,
+      "speaker": "human",
+      "text": "Avec ça, on tape sur le métal pour accrocher le tableau."
+    },
+    {
+      "offset_ms": 10630,
+      "speaker": "guesser",
+      "text": "Marteau"
+    }
+  ],
+  "judge_events": []
+}

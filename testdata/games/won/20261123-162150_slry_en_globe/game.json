@@ -1,0 +1,54 @@
+{
+  "game_id": "SlRY",
+  "outcome": "won",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T16:21:50.398694Z",
+  "ended_at": "2026-11-23T16:22:05.161994Z",
+  "duration_ms": 14763,
+  "target_word": "Globe",
+  "forbidden_words": [
+    "World",
+    "Earth",
+    "Map",
+    "Round"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3231,
+    "last_packet_ms": 14703,
+    "packet_count": 180,
+    "total_bytes": 368640,
+    "audio_duration_ms": 11520
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 13558,
+    "last_packet_ms": 13780,
+    "packet_count": 7,
+    "total_bytes": 40322,
+    "audio_duration_ms": 840
+  },
+  "transcripts": [
+    {
+      "offset_ms": 13402,
+      "speaker": "human",
+      "text": "It looks exactly like our planet in 3D and you can turn it around you with your finger."
+    },
+    {
+      "offset_ms": 13558,
+      "speaker": "guesser",
+      "text": "Globe"
+    }
+  ],
+  "judge_events": []
+}

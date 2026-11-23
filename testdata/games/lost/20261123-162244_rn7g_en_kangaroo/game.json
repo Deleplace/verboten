@@ -1,0 +1,45 @@
+{
+  "game_id": "rN7G",
+  "outcome": "lost",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T16:22:44.759513Z",
+  "ended_at": "2026-11-23T16:23:01.133018Z",
+  "duration_ms": 16373,
+  "target_word": "Kangaroo",
+  "forbidden_words": [
+    "Jump",
+    "Pouch",
+    "Australia",
+    "Animal"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3191,
+    "last_packet_ms": 16342,
+    "packet_count": 206,
+    "total_bytes": 421888,
+    "audio_duration_ms": 13184
+  },
+  "guesser_audio": {
+    "packet_count": 0,
+    "total_bytes": 0,
+    "audio_duration_ms": 0
+  },
+  "transcripts": [],
+  "judge_events": [
+    {
+      "offset_ms": 16371,
+      "timestamp": "2026-11-23T16:23:01.131254Z",
+      "action": "declare_loss",
+      "spoken_word": "pouch",
+      "forbidden_word": "pouch",
+      "reason": "exact"
+    }
+  ]
+}
