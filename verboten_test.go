@@ -683,6 +683,237 @@ func TestDecisionSameRootFilteringInLiveGame(t *testing.T) {
 	}
 }
 
+func TestIsExactForbiddenMatch(t *testing.T) {
+	cases := []struct {
+		spoken    string
+		forbidden string
+		want      bool
+	}{
+		{"instrument", "Instrument", true},
+		{"l'instrument", "Instrument", true},
+		{"l’instrument", "Instrument", true},
+		{"d'arbre", "Arbre", true},
+		{"un instrument", "Instrument", true},
+		{"C'est l'instrument !", "Instrument", true},
+		{"l'eau", "Eau", true},
+		{"Tic-tac", "tic-tac", true},
+		{"an ice cream!", "Ice cream", true},
+		{"l'œuf", "Oeuf", true},
+		{"flamme", "Feu", false},
+		{"joue", "Jouer", false},
+		{"instruments", "Instrument", false},
+		{"couvre-chef", "Chef", false},
+		{"ice", "Ice cream", false},
+		{"", "Instrument", false},
+		{"instrument", "", false},
+	}
+	for _, tc := range cases {
+		if got := isExactForbiddenMatch(tc.spoken, tc.forbidden); got != tc.want {
+			t.Errorf("isExactForbiddenMatch(%q, %q) = %v, want %v", tc.spoken, tc.forbidden, got, tc.want)
+		}
+	}
+}
+
+func TestExactMatchWithArticleSkipsDecision1InLiveGame(t *testing.T) {
+	cases := []struct {
+		name              string
+		spoken            string
+		forbidden         string
+		judgeReason       string
+		wantDecisionCalls int
+		wantReason        string
+	}{
+		{
+			name:              "elided_article_exact",
+			spoken:            "l'instrument",
+			forbidden:         "Instrument",
+			judgeReason:       "exact",
+			wantDecisionCalls: 0,
+			wantReason:        "exact",
+		},
+		{
+			name:              "elided_article_mislabeled_resembling",
+			spoken:            "d'arbre",
+			forbidden:         "Arbre",
+			judgeReason:       "resembling",
+			wantDecisionCalls: 0,
+			wantReason:        "exact",
+		},
+		{
+			name:              "resembling_mislabeled_exact",
+			spoken:            "porte",
+			forbidden:         "Porter",
+			judgeReason:       "exact",
+			wantDecisionCalls: 1,
+			wantReason:        "resembling",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			type capturedSession struct {
+				isJudge bool
+				conn    *websocket.Conn
+			}
+			var (
+				mu       sync.Mutex
+				sessions []*capturedSession
+				bothUp   = make(chan struct{})
+			)
+
+			fakeGemini := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				c, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					t.Errorf("fake gemini upgrade: %v", err)
+					return
+				}
+				_, setupBytes, err := c.ReadMessage()
+				if err != nil {
+					c.Close()
+					return
+				}
+				sess := &capturedSession{
+					isJudge: strings.Contains(string(setupBytes), declareLossFuncName),
+					conn:    c,
+				}
+				_ = c.WriteMessage(websocket.TextMessage, []byte(`{"setupComplete":{}}`))
+
+				mu.Lock()
+				sessions = append(sessions, sess)
+				if len(sessions) == 2 {
+					close(bothUp)
+				}
+				mu.Unlock()
+
+				for {
+					if _, _, err := c.ReadMessage(); err != nil {
+						return
+					}
+				}
+			}))
+			defer fakeGemini.Close()
+
+			client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+				APIKey:  "test-api-key",
+				Backend: genai.BackendGeminiAPI,
+				HTTPOptions: genai.HTTPOptions{
+					BaseURL:    "ws://" + strings.TrimPrefix(fakeGemini.URL, "http://"),
+					APIVersion: "v1beta",
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+
+			var (
+				callMu        sync.Mutex
+				decisionCalls int
+			)
+			gameServer := NewServer(client)
+			gameServer.RecordingsDir = t.TempDir()
+			gameServer.sameRootProbFunc = func(ctx context.Context, lang, spoken, forbidden string) (float64, error) {
+				callMu.Lock()
+				decisionCalls++
+				callMu.Unlock()
+				return 0.94, nil
+			}
+
+			handlerDone := make(chan struct{})
+			appServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				defer close(handlerDone)
+				gameServer.liveGame(w, r)
+			}))
+			defer appServer.Close()
+
+			browserURL := "ws://" + strings.TrimPrefix(appServer.URL, "http://") +
+				"/live/fr?target=Guitare&forbidden=Guitare&forbidden=Instrument&forbidden=Arbre&forbidden=Porter"
+			browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, nil)
+			if err != nil {
+				t.Fatalf("dial liveGame: %v", err)
+			}
+			defer func() {
+				_ = browserConn.Close()
+				select {
+				case <-handlerDone:
+				case <-time.After(3 * time.Second):
+				}
+			}()
+
+			select {
+			case <-bothUp:
+			case <-time.After(3 * time.Second):
+				t.Fatal("timed out waiting for both sessions")
+			}
+
+			mu.Lock()
+			var judgeSess, guesserSess *capturedSession
+			for _, s := range sessions {
+				if s.isJudge {
+					judgeSess = s
+				} else {
+					guesserSess = s
+				}
+			}
+			mu.Unlock()
+			defer judgeSess.conn.Close()
+			defer guesserSess.conn.Close()
+
+			_ = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+			if _, _, err := browserConn.ReadMessage(); err != nil {
+				t.Fatalf("read setupComplete: %v", err)
+			}
+
+			toolCallBytes, err := json.Marshal(map[string]any{
+				"toolCall": map[string]any{
+					"functionCalls": []map[string]any{
+						{
+							"id":   "c1",
+							"name": declareLossFuncName,
+							"args": map[string]any{
+								"forbidden_word": tc.forbidden,
+								"spoken_word":    tc.spoken,
+								"reason":         tc.judgeReason,
+							},
+						},
+					},
+				},
+			})
+			if err != nil {
+				t.Fatalf("marshal toolCall: %v", err)
+			}
+			if err := judgeSess.conn.WriteMessage(websocket.TextMessage, toolCallBytes); err != nil {
+				t.Fatalf("write toolCall: %v", err)
+			}
+
+			_ = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+			_, gotBytes, err := browserConn.ReadMessage()
+			if err != nil {
+				t.Fatalf("read browser verdict: %v", err)
+			}
+			var verdict judgeMessage
+			if err := json.Unmarshal(gotBytes, &verdict); err != nil {
+				t.Fatalf("unmarshal verdict: %v", err)
+			}
+			if verdict.Judge == nil || !verdict.Judge.Lost {
+				t.Fatalf("expected loss verdict, got: %+v", verdict.Judge)
+			}
+			if verdict.Judge.Reason != tc.wantReason {
+				t.Errorf("verdict.Reason = %q, want %q", verdict.Judge.Reason, tc.wantReason)
+			}
+			if verdict.Judge.ForbiddenWord != tc.forbidden {
+				t.Errorf("verdict.ForbiddenWord = %q, want %q", verdict.Judge.ForbiddenWord, tc.forbidden)
+			}
+
+			callMu.Lock()
+			gotCalls := decisionCalls
+			callMu.Unlock()
+			if gotCalls != tc.wantDecisionCalls {
+				t.Errorf("Decision 1 calls = %d, want %d", gotCalls, tc.wantDecisionCalls)
+			}
+		})
+	}
+}
+
 func TestNewGenAIClientDefaultsToV1BetaForGeminiAPI(t *testing.T) {
 	t.Setenv("GOOGLE_API_KEY", "test-key")
 	t.Setenv("GOOGLE_GENAI_USE_VERTEXAI", "")

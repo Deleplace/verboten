@@ -751,7 +751,7 @@
             if (reason === 'translation' && langPhrases.youSaidTranslation) {
                 return langPhrases.youSaidTranslation(spokenWord, forbiddenWord);
             }
-            if (normalizeWord(spokenWord) === normalizeWord(forbiddenWord) || !langPhrases.youSaidTooClose) {
+            if (reason === 'exact' || normalizeWord(spokenWord) === normalizeWord(forbiddenWord) || !langPhrases.youSaidTooClose) {
                 return langPhrases.youSaidForbidden(forbiddenWord);
             }
             return langPhrases.youSaidTooClose(spokenWord, forbiddenWord);

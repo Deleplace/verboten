@@ -355,7 +355,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 								},
 								"spoken_word": {
 									Type:        genai.TypeString,
-									Description: "The word or phrase spoken by the human player (in any language) that triggered the loss.",
+									Description: "Only the triggering word itself spoken by the human player (in any language), stripped of any surrounding articles, determiners, or elided prefixes (e.g. 'instrument', NOT \"l'instrument\" or 'un instrument').",
 								},
 								"reason": {
 									Type:        genai.TypeString,
@@ -513,11 +513,13 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 						}
 
 						// When the Judge detects a "too close" (resembling) word — or any non-translation
-						// call where the spoken and forbidden words are not identical — double-check with
-						// Gemini Decision 1 whether they share the same root (threshold >= 75%).
+						// call where the spoken word is not an exact token match for the forbidden word —
+						// double-check with Gemini Decision 1 whether they share the same root (threshold >= 75%).
 						var decisionProb *float64
-						isExactMatch := spokenWord != "" && forbiddenWord != "" && normalizeWord(spokenWord) == normalizeWord(forbiddenWord)
-						if reason != "translation" && !isExactMatch && spokenWord != "" && forbiddenWord != "" {
+						isExactMatch := isExactForbiddenMatch(spokenWord, forbiddenWord)
+						if isExactMatch {
+							reason = "exact"
+						} else if reason != "translation" && spokenWord != "" && forbiddenWord != "" {
 							checkCtx, checkCancel := context.WithTimeout(ctx, 5*time.Second)
 							prob, err := vg.sameRootProbability(checkCtx, lang, spokenWord, forbiddenWord)
 							checkCancel()
@@ -533,6 +535,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 									)
 									continue
 								}
+								reason = "resembling"
 							}
 						}
 
@@ -611,7 +614,57 @@ func normalizeWord(s string) string {
 	}
 	normalized = strings.ReplaceAll(normalized, "œ", "oe")
 	normalized = strings.ReplaceAll(normalized, "æ", "ae")
+	normalized = strings.ReplaceAll(normalized, "’", "'")
+	normalized = strings.ReplaceAll(normalized, "‘", "'")
+	normalized = strings.ReplaceAll(normalized, "ʼ", "'")
 	return normalized
+}
+
+// tokenizeForExactMatch splits a normalized phrase on whitespace and apostrophes
+// (e.g. French elisions like "l'instrument" -> ["l", "instrument"]) while keeping
+// internal hyphens intact (e.g. "tic-tac", "couvre-chef").
+func tokenizeForExactMatch(s string) []string {
+	normStr := normalizeWord(s)
+	if normStr == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(normStr, func(r rune) bool {
+		return unicode.IsSpace(r) || r == '\''
+	})
+	tokens := make([]string, 0, len(parts))
+	for _, p := range parts {
+		trimmed := strings.TrimFunc(p, func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+		})
+		if trimmed != "" {
+			tokens = append(tokens, trimmed)
+		}
+	}
+	return tokens
+}
+
+// isExactForbiddenMatch reports whether spokenWord contains forbiddenWord as an exact
+// token (or exact contiguous token sequence for multi-word forbidden words), ignoring
+// surrounding articles, determiners, punctuation, and elided prefixes such as "l'" or "d'".
+func isExactForbiddenMatch(spokenWord, forbiddenWord string) bool {
+	spokenTokens := tokenizeForExactMatch(spokenWord)
+	forbiddenTokens := tokenizeForExactMatch(forbiddenWord)
+	if len(spokenTokens) == 0 || len(forbiddenTokens) == 0 || len(forbiddenTokens) > len(spokenTokens) {
+		return false
+	}
+	for i := 0; i <= len(spokenTokens)-len(forbiddenTokens); i++ {
+		matched := true
+		for j := range forbiddenTokens {
+			if spokenTokens[i+j] != forbiddenTokens[j] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 const alphanum = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
