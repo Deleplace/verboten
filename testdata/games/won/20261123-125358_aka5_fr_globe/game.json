@@ -1,0 +1,53 @@
+{
+  "game_id": "aKa5",
+  "language": "fr",
+  "language_code": "fr-FR",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T12:53:58.17212Z",
+  "ended_at": "2026-11-23T12:54:07.864454Z",
+  "duration_ms": 9692,
+  "target_word": "Globe",
+  "forbidden_words": [
+    "Monde",
+    "Terre",
+    "Carte",
+    "Rond"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 2986,
+    "last_packet_ms": 9658,
+    "packet_count": 105,
+    "total_bytes": 215040,
+    "audio_duration_ms": 6720
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 8489,
+    "last_packet_ms": 8614,
+    "packet_count": 6,
+    "total_bytes": 37922,
+    "audio_duration_ms": 790
+  },
+  "transcripts": [
+    {
+      "offset_ms": 8484,
+      "speaker": "human",
+      "text": "C'est un truc sphérique avec tous les pays."
+    },
+    {
+      "offset_ms": 8489,
+      "speaker": "guesser",
+      "text": "Globe?"
+    }
+  ],
+  "judge_events": []
+}

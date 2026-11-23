@@ -1,0 +1,63 @@
+{
+  "game_id": "SZoG",
+  "language": "fr",
+  "language_code": "fr-FR",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T12:54:14.919849Z",
+  "ended_at": "2026-11-23T12:54:30.276907Z",
+  "duration_ms": 15357,
+  "target_word": "Plage",
+  "forbidden_words": [
+    "Sable",
+    "Océan",
+    "Soleil",
+    "Eau"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 2904,
+    "last_packet_ms": 15335,
+    "packet_count": 195,
+    "total_bytes": 399360,
+    "audio_duration_ms": 12480
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 10537,
+    "last_packet_ms": 14363,
+    "packet_count": 12,
+    "total_bytes": 71524,
+    "audio_duration_ms": 1490
+  },
+  "transcripts": [
+    {
+      "offset_ms": 10418,
+      "speaker": "human",
+      "text": "C'est tout jaune avec de l'écume, c'est grand, on peut marcher dessus."
+    },
+    {
+      "offset_ms": 10537,
+      "speaker": "guesser",
+      "text": "Sable"
+    },
+    {
+      "offset_ms": 14128,
+      "speaker": "human",
+      "text": "Oui, mais le lieu."
+    },
+    {
+      "offset_ms": 14154,
+      "speaker": "guesser",
+      "text": "Plage"
+    }
+  ],
+  "judge_events": []
+}

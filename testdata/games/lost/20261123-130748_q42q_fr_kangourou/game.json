@@ -1,0 +1,44 @@
+{
+  "game_id": "q42q",
+  "language": "fr",
+  "language_code": "fr-FR",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-23T13:07:48.743941Z",
+  "ended_at": "2026-11-23T13:08:04.241523Z",
+  "duration_ms": 15497,
+  "target_word": "Kangourou",
+  "forbidden_words": [
+    "Sauter",
+    "Poche",
+    "Australie",
+    "Animal"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3332,
+    "last_packet_ms": 15443,
+    "packet_count": 190,
+    "total_bytes": 389120,
+    "audio_duration_ms": 12160
+  },
+  "guesser_audio": {
+    "packet_count": 0,
+    "total_bytes": 0,
+    "audio_duration_ms": 0
+  },
+  "transcripts": [],
+  "judge_events": [
+    {
+      "offset_ms": 15495,
+      "timestamp": "2026-11-23T13:08:04.239829Z",
+      "action": "declare_loss",
+      "spoken_word": "poche",
+      "forbidden_word": "Poche",
+      "reason": "exact"
+    }
+  ]
+}
