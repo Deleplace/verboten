@@ -67,15 +67,16 @@ func NewLogger(w io.Writer) *slog.Logger {
 }
 
 type VerbotenGameServer struct {
-	genaiClient      *genai.Client
-	Logger           *slog.Logger
-	Verbose          bool
-	LiveModel        string
-	TTSModel         string
-	JudgeVoice       string
-	RecordingsDir    string
-	sameRootProbFunc func(ctx context.Context, lang, spokenWord, forbiddenWord string) (float64, error)
-	judgeTTSFunc     func(ctx context.Context, lang, text string) ([]byte, string, error)
+	genaiClient               *genai.Client
+	Logger                    *slog.Logger
+	Verbose                   bool
+	LiveModel                 string
+	TTSModel                  string
+	JudgeVoice                string
+	RecordingsDir             string
+	sameRootProbFunc          func(ctx context.Context, lang, spokenWord, forbiddenWord string) (float64, error)
+	samePronunciationProbFunc func(ctx context.Context, lang, spokenWord, forbiddenWord string) (float64, error)
+	judgeTTSFunc              func(ctx context.Context, lang, text string) ([]byte, string, error)
 
 	ttsCacheMu sync.RWMutex
 	ttsCache   map[string]cachedTTSAudio
@@ -644,9 +645,12 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 
 						// When the Judge detects a "too close" (resembling) word — or any non-translation
 						// call where the spoken word is not an exact token match for the forbidden word —
-						// run Call A (Gemini Decision 1 same-root check, threshold >= 75%) and Call B
-						// (Gemini TTS for the Judge's loss announcement) concurrently.
-						// Once A and B complete, interrupt the game with the TTS voice if A confirmed a loss.
+						// run all checks and candidate TTS generations concurrently:
+						//   - Call A1: Gemini Decision 1 same-root check (threshold >= 75%)
+						//   - Call A2: Gemini Decision 1 same-pronunciation check (threshold >= 75%, e.g. "clous"/"Clou", "poissons"/"Poisson")
+						//   - Call B1: Gemini TTS for the "resembling" explanation
+						//   - Call B2: Gemini TTS for the "exact" explanation (used if A2 confirms identical pronunciation)
+						// Once A1 & A2 complete, unused TTS calls are cancelled immediately so zero extra latency is added.
 						var (
 							decisionProb  *float64
 							ttsAudio      []byte
@@ -660,7 +664,8 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 						}
 
 						if needsDecision {
-							lossMessage = formatJudgeLossText(lang, spokenWord, forbiddenWord, "resembling")
+							resemblingMessage := formatJudgeLossText(lang, spokenWord, forbiddenWord, "resembling")
+							exactMessage := formatJudgeLossText(lang, spokenWord, forbiddenWord, "exact")
 
 							type decisionResult struct {
 								prob float64
@@ -671,27 +676,45 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 								mimeType string
 								err      error
 							}
-							decisionCh := make(chan decisionResult, 1)
-							ttsCh := make(chan ttsResult, 1)
+							rootCh := make(chan decisionResult, 1)
+							pronCh := make(chan decisionResult, 1)
+							resemblingTTSCh := make(chan ttsResult, 1)
+							exactTTSCh := make(chan ttsResult, 1)
 
-							checkCtx, checkCancel := context.WithTimeout(ctx, 5*time.Second)
-							ttsCtx, ttsCancel := context.WithTimeout(ctx, judgeTTSTimeout)
+							rootCtx, rootCancel := context.WithTimeout(ctx, 5*time.Second)
+							pronCtx, pronCancel := context.WithTimeout(ctx, 5*time.Second)
+							resemblingTTSCtx, resemblingTTSCancel := context.WithTimeout(ctx, judgeTTSTimeout)
+							exactTTSCtx, exactTTSCancel := context.WithTimeout(ctx, judgeTTSTimeout)
 
-							// Call A: Decision 1 API
+							// Call A1: Decision 1 API (same root?)
 							go func() {
-								defer checkCancel()
-								prob, err := vg.sameRootProbability(checkCtx, lang, spokenWord, forbiddenWord)
-								decisionCh <- decisionResult{prob: prob, err: err}
+								defer rootCancel()
+								prob, err := vg.sameRootProbability(rootCtx, lang, spokenWord, forbiddenWord)
+								rootCh <- decisionResult{prob: prob, err: err}
 							}()
 
-							// Call B (concurrent with A): Gemini TTS for the Judge verdict voice
+							// Call A2 (concurrent): Decision 1 API (same spoken pronunciation?)
 							go func() {
-								defer ttsCancel()
-								audio, mimeType, err := vg.synthesizeJudgeSpeech(ttsCtx, lang, lossMessage)
-								ttsCh <- ttsResult{audio: audio, mimeType: mimeType, err: err}
+								defer pronCancel()
+								prob, err := vg.samePronunciationProbability(pronCtx, lang, spokenWord, forbiddenWord)
+								pronCh <- decisionResult{prob: prob, err: err}
 							}()
 
-							decRes := <-decisionCh
+							// Call B1 (concurrent): Gemini TTS for resembling verdict
+							go func() {
+								defer resemblingTTSCancel()
+								audio, mimeType, err := vg.synthesizeJudgeSpeech(resemblingTTSCtx, lang, resemblingMessage)
+								resemblingTTSCh <- ttsResult{audio: audio, mimeType: mimeType, err: err}
+							}()
+
+							// Call B2 (concurrent): Gemini TTS for exact verdict (if homophone / identical pronunciation)
+							go func() {
+								defer exactTTSCancel()
+								audio, mimeType, err := vg.synthesizeJudgeSpeech(exactTTSCtx, lang, exactMessage)
+								exactTTSCh <- ttsResult{audio: audio, mimeType: mimeType, err: err}
+							}()
+
+							decRes := <-rootCh
 							if decRes.err != nil {
 								gameLog.Error("decision 1 check failed",
 									"spoken", spokenWord,
@@ -710,7 +733,9 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 									"probability", prob,
 								)
 								if prob < sameRootProbabilityThreshold {
-									ttsCancel()
+									pronCancel()
+									resemblingTTSCancel()
+									exactTTSCancel()
 									ignoreAndKeepListening(
 										fmt.Sprintf("Ignored: %q is not too close to %q (same-root probability %.0f%% < 75%%). Keep listening.", spokenWord, forbiddenWord, prob*100),
 										decisionProb,
@@ -721,10 +746,43 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 							}
 
 							if !gameOver.CompareAndSwap(false, true) {
-								ttsCancel()
+								pronCancel()
+								resemblingTTSCancel()
+								exactTTSCancel()
 								return
 							}
-							ttsRes := <-ttsCh
+
+							samePronunciation := false
+							pronRes := <-pronCh
+							if pronRes.err != nil {
+								gameLog.Warn("decision 1 pronunciation check failed",
+									"spoken", spokenWord,
+									"forbidden", forbiddenWord,
+									"err", pronRes.err,
+								)
+							} else {
+								pronPct := int(math.Round(pronRes.prob * 100))
+								gameLog.Info(
+									fmt.Sprintf("Prononciation identique entre '%s' et '%s': %d%%.", spokenWord, forbiddenWord, pronPct),
+									"spoken", spokenWord,
+									"forbidden", forbiddenWord,
+									"same_pronunciation_pct", pronPct,
+									"probability", pronRes.prob,
+								)
+								samePronunciation = pronRes.prob >= samePronunciationProbabilityThreshold
+							}
+
+							var ttsRes ttsResult
+							if samePronunciation {
+								reason = "exact"
+								lossMessage = exactMessage
+								resemblingTTSCancel()
+								ttsRes = <-exactTTSCh
+							} else {
+								lossMessage = resemblingMessage
+								exactTTSCancel()
+								ttsRes = <-resemblingTTSCh
+							}
 							if ttsRes.err != nil {
 								gameLog.Warn("judge TTS failed", "reason", reason, "err", ttsRes.err)
 							} else {

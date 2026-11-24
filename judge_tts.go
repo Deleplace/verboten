@@ -50,18 +50,18 @@ func formatJudgeLossText(lang, spokenWord, forbiddenWord, reason string) string 
 			if word == "" {
 				word = spoken
 			}
-			return fmt.Sprintf("Vous avez dit le mot interdit « %s ».", word)
+			return fmt.Sprintf("Vous avez dit le mot prohibé « %s ».", word)
 		}
 		switch reason {
 		case "translation":
 			return fmt.Sprintf("Vous avez dit le mot « %s », qui est une traduction du mot à deviner « %s ».", spoken, forbidden)
 		case "exact":
-			return fmt.Sprintf("Vous avez dit le mot interdit « %s ».", forbidden)
+			return fmt.Sprintf("Vous avez dit le mot prohibé « %s ».", forbidden)
 		default:
 			if normalizeWord(spoken) == normalizeWord(forbidden) {
-				return fmt.Sprintf("Vous avez dit le mot interdit « %s ».", forbidden)
+				return fmt.Sprintf("Vous avez dit le mot prohibé « %s ».", forbidden)
 			}
-			return fmt.Sprintf("Vous avez dit le mot « %s », qui est trop proche du mot interdit « %s ».", spoken, forbidden)
+			return fmt.Sprintf("Vous avez dit le mot « %s », qui est trop proche du mot prohibé « %s ».", spoken, forbidden)
 		}
 	case "ar":
 		if spoken == "" || forbidden == "" {

@@ -1454,11 +1454,11 @@ func TestFormatJudgeLossText(t *testing.T) {
 	}{
 		{
 			lang: "fr", spoken: "porte", forbidden: "porter", reason: "resembling",
-			want: "Vous avez dit le mot « porte », qui est trop proche du mot interdit « porter ».",
+			want: "Vous avez dit le mot « porte », qui est trop proche du mot prohibé « porter ».",
 		},
 		{
 			lang: "fr", spoken: "l'instrument", forbidden: "Instrument", reason: "exact",
-			want: "Vous avez dit le mot interdit « Instrument ».",
+			want: "Vous avez dit le mot prohibé « Instrument ».",
 		},
 		{
 			lang: "fr", spoken: "lemon", forbidden: "Citron", reason: "translation",
@@ -1485,8 +1485,66 @@ func TestFormatJudgeLossText(t *testing.T) {
 	}
 }
 
+func TestDecisionSamePronunciationWireFormat(t *testing.T) {
+	var (
+		gotPath string
+		gotBody map[string]any
+	)
+	fakeDecisionServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode decision request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "dec-pron-1",
+			"model": "gemini-decision-1",
+			"status": "completed",
+			"answers": {
+				"same_pronunciation": {"type": "noul", "noul": 0.96, "confidence": 0.95}
+			}
+		}`))
+	}))
+	defer fakeDecisionServer.Close()
+
+	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+		APIKey:  "test-api-key",
+		Backend: genai.BackendGeminiAPI,
+		HTTPOptions: genai.HTTPOptions{
+			BaseURL:    fakeDecisionServer.URL,
+			APIVersion: "v1beta",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	srv := NewServer(client)
+	prob, err := srv.samePronunciationProbability(context.Background(), "fr", "poissons", "Poisson")
+	if err != nil {
+		t.Fatalf("samePronunciationProbability: %v", err)
+	}
+	if prob < 0.95 || prob > 0.97 {
+		t.Fatalf("prob = %v, want ~0.96", prob)
+	}
+	if !strings.HasSuffix(gotPath, "/decisions") {
+		t.Errorf("request path = %q, want suffix /decisions", gotPath)
+	}
+	if gotBody["model"] != decisionModelName {
+		t.Errorf("request model = %v, want %q", gotBody["model"], decisionModelName)
+	}
+	questions, _ := gotBody["questions"].(map[string]any)
+	if _, ok := questions["same_pronunciation"]; !ok {
+		t.Errorf("expected same_pronunciation question in %+v", gotBody)
+	}
+}
+
 func TestJudgeLossConcurrentDecisionAndTTS(t *testing.T) {
-	fakeWAV := []byte("RIFF\x24\x00\x00\x00WAVEfmt mock-wav-audio")
+	fakeResemblingWAV := []byte("RIFF\x24\x00\x00\x00WAVEfmt mock-resembling")
+	fakeExactWAV := []byte("RIFF\x24\x00\x00\x00WAVEfmt mock-exact-wav")
 
 	t.Run("resembling_confirmed_runs_A_and_B_concurrently", func(t *testing.T) {
 		type capturedSession struct {
@@ -1542,37 +1600,59 @@ func TestJudgeLossConcurrentDecisionAndTTS(t *testing.T) {
 			t.Fatalf("NewClient: %v", err)
 		}
 
-		// Synchronization barrier proving Call A (Decision 1) and Call B (TTS) run concurrently:
-		// Call A waits for Call B to have started before returning, and Call B waits for Call A
-		// to have started before finishing. Neither can complete unless both run in parallel!
-		callAStarted := make(chan struct{})
-		callBStarted := make(chan struct{})
-		var gotTTSText string
-		var gotTTSLang string
+		// Synchronization barrier proving A1 (same_root), A2 (same_pronunciation),
+		// B1 (resembling TTS), and B2 (exact TTS) ALL run concurrently!
+		callA1Started := make(chan struct{})
+		callA2Started := make(chan struct{})
+		callB1Started := make(chan struct{})
+		callB2Started := make(chan struct{})
+		exactTTSCanceled := make(chan struct{})
+
+		wantResemblingMsg := "Vous avez dit le mot « porte », qui est trop proche du mot prohibé « porter »."
+		wantExactMsg := "Vous avez dit le mot prohibé « porter »."
 
 		gameServer := NewServer(client)
 		gameServer.RecordingsDir = t.TempDir()
 		gameServer.sameRootProbFunc = func(ctx context.Context, lang, spoken, forbidden string) (float64, error) {
-			close(callAStarted)
-			select {
-			case <-callBStarted:
-			case <-time.After(2 * time.Second):
-				t.Errorf("Call B (TTS) did not start concurrently with Call A (Decision 1)")
+			close(callA1Started)
+			for _, ch := range []chan struct{}{callA2Started, callB1Started, callB2Started} {
+				select {
+				case <-ch:
+				case <-time.After(2 * time.Second):
+					t.Errorf("concurrent calls did not all start with Call A1")
+				}
 			}
 			return 0.94, nil
 		}
-		gameServer.judgeTTSFunc = func(ctx context.Context, lang, text string) ([]byte, string, error) {
-			gotTTSLang = lang
-			gotTTSText = text
-			close(callBStarted)
+		gameServer.samePronunciationProbFunc = func(ctx context.Context, lang, spoken, forbidden string) (float64, error) {
+			close(callA2Started)
 			select {
-			case <-callAStarted:
+			case <-callA1Started:
 			case <-time.After(2 * time.Second):
-				t.Errorf("Call A (Decision 1) did not start concurrently with Call B (TTS)")
+				t.Errorf("Call A1 did not start concurrently with Call A2")
 			}
-			// Simulate TTS taking slightly longer than Decision 1.
-			time.Sleep(30 * time.Millisecond)
-			return fakeWAV, "audio/wav", nil
+			return 0.03, nil // "porte" and "porter" are pronounced differently
+		}
+		gameServer.judgeTTSFunc = func(ctx context.Context, lang, text string) ([]byte, string, error) {
+			switch text {
+			case wantResemblingMsg:
+				close(callB1Started)
+				select {
+				case <-callA1Started:
+				case <-time.After(2 * time.Second):
+					t.Errorf("Call A1 did not start concurrently with Call B1")
+				}
+				time.Sleep(30 * time.Millisecond)
+				return fakeResemblingWAV, "audio/wav", nil
+			case wantExactMsg:
+				close(callB2Started)
+				<-ctx.Done()
+				close(exactTTSCanceled)
+				return nil, "", ctx.Err()
+			default:
+				t.Errorf("unexpected TTS text: %q", text)
+				return nil, "", context.Canceled
+			}
 		}
 
 		handlerDone := make(chan struct{})
@@ -1631,6 +1711,12 @@ func TestJudgeLossConcurrentDecisionAndTTS(t *testing.T) {
 			t.Fatalf("read judge verdict: %v", err)
 		}
 
+		select {
+		case <-exactTTSCanceled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("expected unused exact TTS call B2 to be cancelled")
+		}
+
 		var jm judgeMessage
 		if err := json.Unmarshal(gotBytes, &jm); err != nil {
 			t.Fatalf("unmarshal verdict: %v", err)
@@ -1638,12 +1724,11 @@ func TestJudgeLossConcurrentDecisionAndTTS(t *testing.T) {
 		if jm.Judge == nil || !jm.Judge.Lost {
 			t.Fatalf("expected loss verdict, got %+v", jm.Judge)
 		}
-		wantMsg := "Vous avez dit le mot « porte », qui est trop proche du mot interdit « porter »."
-		if jm.Judge.Message != wantMsg {
-			t.Errorf("Judge.Message = %q, want %q", jm.Judge.Message, wantMsg)
+		if jm.Judge.Reason != "resembling" {
+			t.Errorf("Judge.Reason = %q, want resembling", jm.Judge.Reason)
 		}
-		if gotTTSLang != "fr" || gotTTSText != wantMsg {
-			t.Errorf("TTS called with (%q, %q), want (%q, %q)", gotTTSLang, gotTTSText, "fr", wantMsg)
+		if jm.Judge.Message != wantResemblingMsg {
+			t.Errorf("Judge.Message = %q, want %q", jm.Judge.Message, wantResemblingMsg)
 		}
 		if jm.Judge.AudioMimeType != "audio/wav" {
 			t.Errorf("Judge.AudioMimeType = %q, want audio/wav", jm.Judge.AudioMimeType)
@@ -1652,8 +1737,189 @@ func TestJudgeLossConcurrentDecisionAndTTS(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decode base64 Judge.Audio: %v", err)
 		}
-		if !bytes.Equal(decoded, fakeWAV) {
-			t.Errorf("decoded Judge.Audio = %q, want %q", decoded, fakeWAV)
+		if !bytes.Equal(decoded, fakeResemblingWAV) {
+			t.Errorf("decoded Judge.Audio = %q, want %q", decoded, fakeResemblingWAV)
+		}
+	})
+
+	t.Run("same_pronunciation_switches_to_exact_explanation_concurrently", func(t *testing.T) {
+		type capturedSession struct {
+			isJudge bool
+			conn    *websocket.Conn
+		}
+		var (
+			mu       sync.Mutex
+			sessions []*capturedSession
+			bothUp   = make(chan struct{})
+		)
+
+		fakeGemini := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			c, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				return
+			}
+			_, setupBytes, err := c.ReadMessage()
+			if err != nil {
+				c.Close()
+				return
+			}
+			sess := &capturedSession{
+				isJudge: strings.Contains(string(setupBytes), declareLossFuncName),
+				conn:    c,
+			}
+			_ = c.WriteMessage(websocket.TextMessage, []byte(`{"setupComplete":{}}`))
+
+			mu.Lock()
+			sessions = append(sessions, sess)
+			if len(sessions) == 2 {
+				close(bothUp)
+			}
+			mu.Unlock()
+
+			for {
+				if _, _, err := c.ReadMessage(); err != nil {
+					return
+				}
+			}
+		}))
+		defer fakeGemini.Close()
+
+		client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+			APIKey:  "test-api-key",
+			Backend: genai.BackendGeminiAPI,
+			HTTPOptions: genai.HTTPOptions{
+				BaseURL:    "ws://" + strings.TrimPrefix(fakeGemini.URL, "http://"),
+				APIVersion: "v1beta",
+			},
+		})
+		if err != nil {
+			t.Fatalf("NewClient: %v", err)
+		}
+
+		wantResemblingMsg := "Vous avez dit le mot « poissons », qui est trop proche du mot prohibé « Poisson »."
+		wantExactMsg := "Vous avez dit le mot prohibé « Poisson »."
+
+		callA1Started := make(chan struct{})
+		callA2Started := make(chan struct{})
+		callB1Started := make(chan struct{})
+		callB2Started := make(chan struct{})
+		resemblingTTSCanceled := make(chan struct{})
+
+		gameServer := NewServer(client)
+		gameServer.RecordingsDir = t.TempDir()
+		gameServer.sameRootProbFunc = func(ctx context.Context, lang, spoken, forbidden string) (float64, error) {
+			close(callA1Started)
+			for _, ch := range []chan struct{}{callA2Started, callB1Started, callB2Started} {
+				select {
+				case <-ch:
+				case <-time.After(2 * time.Second):
+					t.Errorf("concurrent calls did not all start with Call A1")
+				}
+			}
+			return 0.98, nil
+		}
+		gameServer.samePronunciationProbFunc = func(ctx context.Context, lang, spoken, forbidden string) (float64, error) {
+			close(callA2Started)
+			return 0.96, nil // "poissons" and "Poisson" are pronounced identically in French
+		}
+		gameServer.judgeTTSFunc = func(ctx context.Context, lang, text string) ([]byte, string, error) {
+			switch text {
+			case wantResemblingMsg:
+				close(callB1Started)
+				<-ctx.Done()
+				close(resemblingTTSCanceled)
+				return nil, "", ctx.Err()
+			case wantExactMsg:
+				close(callB2Started)
+				time.Sleep(25 * time.Millisecond)
+				return fakeExactWAV, "audio/wav", nil
+			default:
+				t.Errorf("unexpected TTS text: %q", text)
+				return nil, "", context.Canceled
+			}
+		}
+
+		handlerDone := make(chan struct{})
+		appServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer close(handlerDone)
+			gameServer.liveGame(w, r)
+		}))
+		defer appServer.Close()
+
+		browserURL := "ws://" + strings.TrimPrefix(appServer.URL, "http://") +
+			"/live/fr?target=Oc%C3%A9an&forbidden=Oc%C3%A9an&forbidden=Poisson"
+		browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, nil)
+		if err != nil {
+			t.Fatalf("dial liveGame: %v", err)
+		}
+		defer func() {
+			_ = browserConn.Close()
+			select {
+			case <-handlerDone:
+			case <-time.After(3 * time.Second):
+			}
+		}()
+
+		select {
+		case <-bothUp:
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for both sessions")
+		}
+
+		mu.Lock()
+		var judgeSess, guesserSess *capturedSession
+		for _, s := range sessions {
+			if s.isJudge {
+				judgeSess = s
+			} else {
+				guesserSess = s
+			}
+		}
+		mu.Unlock()
+		defer judgeSess.conn.Close()
+		defer guesserSess.conn.Close()
+
+		_ = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		if _, _, err := browserConn.ReadMessage(); err != nil {
+			t.Fatalf("read setupComplete: %v", err)
+		}
+
+		toolCall := `{"toolCall":{"functionCalls":[{"id":"c-homophone","name":"declare_loss","args":{"forbidden_word":"Poisson","spoken_word":"poissons","reason":"resembling"}}]}}`
+		if err := judgeSess.conn.WriteMessage(websocket.TextMessage, []byte(toolCall)); err != nil {
+			t.Fatalf("write toolCall: %v", err)
+		}
+
+		_ = browserConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		_, gotBytes, err := browserConn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read judge verdict: %v", err)
+		}
+
+		select {
+		case <-resemblingTTSCanceled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("expected unused resembling TTS call B1 to be cancelled")
+		}
+
+		var jm judgeMessage
+		if err := json.Unmarshal(gotBytes, &jm); err != nil {
+			t.Fatalf("unmarshal verdict: %v", err)
+		}
+		if jm.Judge == nil || !jm.Judge.Lost {
+			t.Fatalf("expected loss verdict, got %+v", jm.Judge)
+		}
+		if jm.Judge.Reason != "exact" {
+			t.Errorf("Judge.Reason = %q, want exact", jm.Judge.Reason)
+		}
+		if jm.Judge.Message != wantExactMsg {
+			t.Errorf("Judge.Message = %q, want %q", jm.Judge.Message, wantExactMsg)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(jm.Judge.Audio)
+		if err != nil {
+			t.Fatalf("decode base64 Judge.Audio: %v", err)
+		}
+		if !bytes.Equal(decoded, fakeExactWAV) {
+			t.Errorf("decoded Judge.Audio = %q, want %q", decoded, fakeExactWAV)
 		}
 	})
 
@@ -1717,19 +1983,26 @@ func TestJudgeLossConcurrentDecisionAndTTS(t *testing.T) {
 			t.Fatalf("NewClient: %v", err)
 		}
 
-		ttsStarted := make(chan struct{})
-		ttsCanceled := make(chan struct{})
+		ttsStarted := make(chan struct{}, 2)
+		ttsCanceled := make(chan struct{}, 2)
+		pronCanceled := make(chan struct{})
 
 		gameServer := NewServer(client)
 		gameServer.RecordingsDir = t.TempDir()
 		gameServer.sameRootProbFunc = func(ctx context.Context, lang, spoken, forbidden string) (float64, error) {
 			<-ttsStarted
+			<-ttsStarted
 			return 0.07, nil // Rejected (< 75%)
 		}
-		gameServer.judgeTTSFunc = func(ctx context.Context, lang, text string) ([]byte, string, error) {
-			close(ttsStarted)
+		gameServer.samePronunciationProbFunc = func(ctx context.Context, lang, spoken, forbidden string) (float64, error) {
 			<-ctx.Done()
-			close(ttsCanceled)
+			close(pronCanceled)
+			return 0, ctx.Err()
+		}
+		gameServer.judgeTTSFunc = func(ctx context.Context, lang, text string) ([]byte, string, error) {
+			ttsStarted <- struct{}{}
+			<-ctx.Done()
+			ttsCanceled <- struct{}{}
 			return nil, "", ctx.Err()
 		}
 
@@ -1783,10 +2056,17 @@ func TestJudgeLossConcurrentDecisionAndTTS(t *testing.T) {
 			t.Fatalf("write toolCall: %v", err)
 		}
 
+		for i := 0; i < 2; i++ {
+			select {
+			case <-ttsCanceled:
+			case <-time.After(2 * time.Second):
+				t.Fatalf("expected both TTS calls to be cancelled after Decision 1 rejected (%d/2 cancelled)", i)
+			}
+		}
 		select {
-		case <-ttsCanceled:
+		case <-pronCanceled:
 		case <-time.After(2 * time.Second):
-			t.Fatal("expected Call B (TTS) context to be cancelled after Decision 1 rejected (< 75%)")
+			t.Fatal("expected same_pronunciation Decision 1 call A2 to be cancelled after A1 rejected")
 		}
 
 		select {
