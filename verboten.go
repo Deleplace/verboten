@@ -2,9 +2,13 @@ package verboten
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"fmt"
-	"log"
+	"io"
+	"io/fs"
+	"log/slog"
+	"math"
 	"math/rand"
 	"net/http"
 	"os"
@@ -14,8 +18,6 @@ import (
 	"text/template"
 	"time"
 	"unicode"
-
-	_ "embed"
 
 	"github.com/gorilla/websocket"
 	"golang.org/x/sync/errgroup"
@@ -27,12 +29,56 @@ import (
 
 const DefaultLiveModel = "gemini-3.1-flash-live-preview"
 
+// NewLogger returns a structured JSON slog.Logger whose top-level keys match
+// Google Cloud Logging conventions ("severity", "message", "time").
+// If w is nil, logs are written to os.Stdout.
+func NewLogger(w io.Writer) *slog.Logger {
+	if w == nil {
+		w = os.Stdout
+	}
+	handler := slog.NewJSONHandler(w, &slog.HandlerOptions{
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if len(groups) != 0 {
+				return a
+			}
+			switch a.Key {
+			case slog.LevelKey:
+				a.Key = "severity"
+				if lvl, ok := a.Value.Any().(slog.Level); ok {
+					switch {
+					case lvl < slog.LevelInfo:
+						a.Value = slog.StringValue("DEBUG")
+					case lvl < slog.LevelWarn:
+						a.Value = slog.StringValue("INFO")
+					case lvl < slog.LevelError:
+						a.Value = slog.StringValue("WARNING")
+					default:
+						a.Value = slog.StringValue("ERROR")
+					}
+				}
+			case slog.MessageKey:
+				a.Key = "message"
+			}
+			return a
+		},
+	})
+	return slog.New(handler)
+}
+
 type VerbotenGameServer struct {
 	genaiClient      *genai.Client
+	Logger           *slog.Logger
 	Verbose          bool
 	LiveModel        string
 	RecordingsDir    string
 	sameRootProbFunc func(ctx context.Context, lang, spokenWord, forbiddenWord string) (float64, error)
+}
+
+func (vg *VerbotenGameServer) logger() *slog.Logger {
+	if vg != nil && vg.Logger != nil {
+		return vg.Logger
+	}
+	return slog.Default()
 }
 
 func NewServer(genaiClient *genai.Client) *VerbotenGameServer {
@@ -113,32 +159,42 @@ const guesserPrompt_ar = `
 	لا تقل أي شيء آخر غير الكلمة التي تخمنها.
 `
 
-func (vg *VerbotenGameServer) Start(ctx context.Context) error {
-	log.SetFlags(0)
-	http.HandleFunc("/", vg.serveGame)
-	http.HandleFunc("/live/", vg.liveGame)
-	http.HandleFunc("/words.json", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "assets/words.json")
+//go:embed assets
+var embeddedAssets embed.FS
+
+func (vg *VerbotenGameServer) Handler() http.Handler {
+	assetsFS, err := fs.Sub(embeddedAssets, "assets")
+	if err != nil {
+		panic(fmt.Errorf("embedded assets sub-fs: %w", err))
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", vg.serveGame)
+	mux.HandleFunc("/live/", vg.liveGame)
+	mux.HandleFunc("/words.json", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFileFS(w, r, assetsFS, "words.json")
 	})
-	http.Handle("/forbiddenwords/", http.StripPrefix("/forbiddenwords/", http.FileServer(http.Dir("assets"))))
+	mux.Handle("/forbiddenwords/", http.StripPrefix("/forbiddenwords/", http.FileServerFS(assetsFS)))
+	return mux
+}
+
+func (vg *VerbotenGameServer) Start(ctx context.Context) error {
+	logger := vg.logger()
 
 	// Determine port for HTTP service.
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
-		log.Printf("defaulting to port %s", port)
+		logger.Info("defaulting to port", "port", port)
 	}
 
 	// Start HTTP server.
-	log.Printf("listening on port %s", port)
-	return http.ListenAndServe(":"+port, nil)
+	logger.Info("listening", "port", port)
+	return http.ListenAndServe(":"+port, vg.Handler())
 }
 
-//go:embed assets/verboten.html
-var gameWebapp string
-
 func (vg *VerbotenGameServer) serveGame(w http.ResponseWriter, r *http.Request) {
-	tmpl, err := template.New("game").Parse(gameWebapp)
+	tmpl, err := template.ParseFS(embeddedAssets, "assets/verboten.html")
 	if err != nil {
 		http.Error(w, "Error loading template", http.StatusInternalServerError)
 		return
@@ -258,19 +314,20 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 		langName = "Arabic"
 		languageCode = "ar-EG"
 	default:
-		log.Printf("unsupported language: %q", lang)
+		vg.logger().Warn("unsupported language", "lang", lang)
 		http.NotFound(w, r)
 		return
 	}
 
 	c, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Println("upgrade error: ", err)
+		vg.logger().Error("websocket upgrade failed", "lang", lang, "err", err)
 		return
 	}
 	defer c.Close()
 
 	gameID := randomString(4)
+	gameLog := vg.logger().With("game_id", gameID)
 	targetWord := r.URL.Query().Get("target")
 	forbiddenWords := r.URL.Query()["forbidden"]
 	if targetWord == "" && len(forbiddenWords) > 0 {
@@ -283,7 +340,6 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 		}
 		otherForbiddenWords = append(otherForbiddenWords, w)
 	}
-	log.Printf("Starting game %s in %s with target %q and proscribed words %q", gameID, lang, targetWord, otherForbiddenWords)
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -292,19 +348,24 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 	if model == "" {
 		model = DefaultLiveModel
 	}
-	log.Printf("Using model %q", model)
+	gameLog.Info("starting game",
+		"lang", lang,
+		"target", targetWord,
+		"forbidden", otherForbiddenWords,
+		"model", model,
+	)
 
 	var recorder *gameRecorder
 	if vg.RecordingsDir != "" {
 		var err error
-		recorder, err = newGameRecorder(vg.RecordingsDir, gameID, lang, languageCode, model, targetWord, otherForbiddenWords)
+		recorder, err = newGameRecorder(vg.RecordingsDir, gameID, lang, languageCode, model, targetWord, otherForbiddenWords, gameLog)
 		if err != nil {
-			log.Printf("Game %s recording disabled: %v", gameID, err)
+			gameLog.Warn("game recording disabled", "dir", vg.RecordingsDir, "err", err)
 		} else {
-			log.Printf("Recording game %s to %s", gameID, recorder.Dir())
+			gameLog.Info("recording game", "dir", recorder.Dir())
 			defer func() {
 				if err := recorder.Close(); err != nil {
-					log.Printf("Game %s close recorder error: %v", gameID, err)
+					gameLog.Error("close recorder failed", "err", err)
 				}
 			}()
 		}
@@ -422,7 +483,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if err := connectGroup.Wait(); err != nil {
-		log.Printf("Game %s connect error: %v", gameID, err)
+		gameLog.Error("connect live models failed", "err", err)
 		if session != nil {
 			session.Close()
 		}
@@ -455,7 +516,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 			message, err := session.Receive()
 			if err != nil {
 				if !gameOver.Load() {
-					log.Println("guesser model deconnected: ", err)
+					gameLog.Warn("guesser model disconnected", "err", err)
 				}
 				return
 			}
@@ -466,13 +527,13 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 				if it := message.ServerContent.InputTranscription; it != nil && strings.TrimSpace(it.Text) != "" {
 					recorder.RecordTranscript("human", it.Text)
 					if vg.Verbose {
-						log.Printf("Game %s Human says %q", gameID, it.Text)
+						gameLog.Info("human transcript", "text", it.Text)
 					}
 				}
 				if ot := message.ServerContent.OutputTranscription; ot != nil && strings.TrimSpace(ot.Text) != "" {
 					recorder.RecordTranscript("guesser", ot.Text)
 					if vg.Verbose {
-						log.Printf("Game %s Guesser says %q", gameID, ot.Text)
+						gameLog.Info("guesser transcript", "text", ot.Text)
 					}
 				}
 				if message.ServerContent.ModelTurn != nil {
@@ -485,11 +546,11 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 			}
 			messageBytes, err := json.Marshal(message)
 			if err != nil {
-				log.Println("marshal guesser model response error: ", message, err)
+				gameLog.Error("marshal guesser response failed", "err", err)
 				return
 			}
 			if err := writeToBrowser(messageBytes); err != nil {
-				log.Println("write message error: ", err)
+				gameLog.Warn("write guesser message failed", "err", err)
 				return
 			}
 		}
@@ -505,7 +566,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 			message, err := sessionJudge.Receive()
 			if err != nil {
 				if !gameOver.Load() {
-					log.Println("judge deconnected: ", err)
+					gameLog.Warn("judge model disconnected", "err", err)
 				}
 				return
 			}
@@ -532,13 +593,16 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 							})
 							judgeWriteMu.Unlock()
 							if err != nil && !gameOver.Load() {
-								log.Println("send tool response to judge error: ", err)
+								gameLog.Warn("send tool response to judge failed", "err", err)
 							}
 						}
 
 						if reason == "translation" && targetWord != "" && normalizeWord(forbiddenWord) != normalizeWord(targetWord) {
 							if vg.Verbose {
-								log.Printf("Game %s ignoring Judge translation call for non-target word %q (target=%q)", gameID, forbiddenWord, targetWord)
+								gameLog.Info("ignoring judge translation call for non-target word",
+									"forbidden", forbiddenWord,
+									"target", targetWord,
+								)
 							}
 							ignoreAndKeepListening("Ignored: foreign-language translations are only forbidden for the target word. Keep listening.", nil)
 							continue
@@ -556,10 +620,21 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 							prob, err := vg.sameRootProbability(checkCtx, lang, spokenWord, forbiddenWord)
 							checkCancel()
 							if err != nil {
-								log.Printf("Game %s Decision 1 error (spoken=%q forbidden=%q): %v", gameID, spokenWord, forbiddenWord, err)
+								gameLog.Error("decision 1 check failed",
+									"spoken", spokenWord,
+									"forbidden", forbiddenWord,
+									"err", err,
+								)
 							} else {
 								decisionProb = &prob
-								log.Printf("Game %s Proximité entre '%s' et '%s': %.0f%%.", gameID, spokenWord, forbiddenWord, prob*100)
+								proximityPct := int(math.Round(prob * 100))
+								gameLog.Info(
+									fmt.Sprintf("Proximité entre '%s' et '%s': %d%%.", spokenWord, forbiddenWord, proximityPct),
+									"spoken", spokenWord,
+									"forbidden", forbiddenWord,
+									"proximity_pct", proximityPct,
+									"probability", prob,
+								)
 								if prob < sameRootProbabilityThreshold {
 									ignoreAndKeepListening(
 										fmt.Sprintf("Ignored: %q is not too close to %q (same-root probability %.0f%% < 75%%). Keep listening.", spokenWord, forbiddenWord, prob*100),
@@ -576,11 +651,11 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 						}
 						recorder.RecordJudgeEvent(fc.Name, false, spokenWord, forbiddenWord, reason, decisionProb)
 						recorder.SetOutcome(OutcomeLost)
-						if reason != "" {
-							log.Printf("Game %s Judge declared loss (%s): spoken=%q forbidden=%q", gameID, reason, spokenWord, forbiddenWord)
-						} else {
-							log.Printf("Game %s Judge declared loss: spoken=%q forbidden=%q", gameID, spokenWord, forbiddenWord)
-						}
+						gameLog.Info("judge declared loss",
+							"reason", reason,
+							"spoken", spokenWord,
+							"forbidden", forbiddenWord,
+						)
 						verdictBytes, err := json.Marshal(judgeMessage{
 							Judge: &judgeVerdict{
 								Lost:          true,
@@ -590,11 +665,11 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 							},
 						})
 						if err != nil {
-							log.Println("marshal judge verdict error: ", err)
+							gameLog.Error("marshal judge verdict failed", "err", err)
 							return
 						}
 						if err := writeToBrowser(verdictBytes); err != nil {
-							log.Println("write judge verdict error: ", err)
+							gameLog.Warn("write judge verdict failed", "err", err)
 						}
 						return
 					}
@@ -610,7 +685,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 		_, message, err := c.ReadMessage()
 		if err != nil {
 			if !gameOver.Load() {
-				log.Println("read from client error: ", err)
+				gameLog.Warn("read from client failed", "err", err)
 			}
 			gameOver.Store(true)
 			break
@@ -624,6 +699,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 			switch ctrl.Outcome {
 			case OutcomeWon, OutcomeLost, OutcomeAbandoned:
 				recorder.SetOutcome(ctrl.Outcome)
+				gameLog.Info("game ended", "outcome", ctrl.Outcome)
 				gameOver.Store(true)
 				return
 			}
@@ -632,14 +708,14 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 
 		var realtimeInput genai.LiveRealtimeInput
 		if err := json.Unmarshal(message, &realtimeInput); err != nil {
-			log.Println("unmarshal message error: ", string(message), err)
+			gameLog.Warn("unmarshal client message failed", "payload", string(message), "err", err)
 			continue
 		}
 		if realtimeInput.Audio != nil && len(realtimeInput.Audio.Data) > 0 {
 			recorder.RecordHumanAudio(realtimeInput.Audio.Data, realtimeInput.Audio.MIMEType)
 		}
 		if err := session.SendRealtimeInput(realtimeInput); err != nil && !gameOver.Load() {
-			log.Println("send to guesser error: ", err)
+			gameLog.Warn("send audio to guesser failed", "err", err)
 		}
 		judgeWriteMu.Lock()
 		err = sessionJudge.SendRealtimeInput(realtimeInput)

@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"math/rand"
 	"os"
 	"strings"
@@ -79,18 +79,21 @@ func main() {
 		Backend: genai.BackendGeminiAPI,
 	})
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("failed to create genai client", "err", err)
+		os.Exit(1)
 	}
 
 	// Load words from JSON file
 	file, err := os.ReadFile("assets/words.json")
 	if err != nil {
-		log.Fatalf("failed to read words file: %v", err)
+		slog.Error("failed to read words file", "path", "assets/words.json", "err", err)
+		os.Exit(1)
 	}
 
 	var allWords wordsByLang
 	if err := json.Unmarshal(file, &allWords); err != nil {
-		log.Fatalf("failed to parse words file: %v", err)
+		slog.Error("failed to parse words file", "path", "assets/words.json", "err", err)
+		os.Exit(1)
 	}
 
 	reader := bufio.NewReader(os.Stdin)
@@ -161,7 +164,8 @@ func main() {
 
 	chat, err := client.Chats.Create(ctx, modelName, config, nil)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("failed to create chat session", "model", modelName, "err", err)
+		os.Exit(1)
 	}
 
 	guesses := 3
@@ -191,7 +195,8 @@ func main() {
 
 		err := g.Wait()
 		if err != nil {
-			log.Fatal(err)
+			slog.Error("turn processing failed", "err", err)
+			os.Exit(1)
 		}
 
 		if lost {
@@ -211,7 +216,8 @@ func main() {
 
 		winning, err := gameWord.isWinning(ctx, aiResponse)
 		if err != nil {
-			log.Fatal(err)
+			slog.Error("failed to check winning condition", "err", err)
+			os.Exit(1)
 		}
 
 		if winning {
@@ -334,7 +340,8 @@ func (fw *forbiddenWord) saidForbidden(ctx context.Context, said string) (lost b
 	}
 
 	if !containsCaseInsensitive(said, result.Fragment) {
-		log.Fatalf("Model flagged fragment %q which was actually not in the user input %q", result.Fragment, said)
+		slog.Error("model flagged fragment not present in user input", "fragment", result.Fragment, "input", said)
+		os.Exit(1)
 	}
 
 	if normalize(result.Fragment) == normalize(result.ForbiddenWord) {
@@ -425,7 +432,8 @@ func isTranslation(ctx context.Context, word1, word2 string, word2Lang string) (
 func checkNotEmpty(res *genai.GenerateContentResponse) {
 	if len(res.Candidates) == 0 ||
 		len(res.Candidates[0].Content.Parts) == 0 {
-		log.Fatalf("empty response from model")
+		slog.Error("empty response from model")
+		os.Exit(1)
 	}
 }
 

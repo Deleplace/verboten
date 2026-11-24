@@ -1184,3 +1184,51 @@ func TestDefaultRecordingsDirForEnv(t *testing.T) {
 		})
 	}
 }
+
+func TestEmbeddedAssetsServing(t *testing.T) {
+	// Change into an empty temporary directory so any dynamic filesystem read of "assets/" would fail.
+	t.Chdir(t.TempDir())
+
+	srv := NewServer(nil)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	cases := []struct {
+		path            string
+		wantStatus      int
+		wantContentType string
+		wantContains    string
+	}{
+		{path: "/", wantStatus: http.StatusOK, wantContains: "<title>"},
+		{path: "/words.json", wantStatus: http.StatusOK, wantContentType: "application/json", wantContains: `"pizza"`},
+		{path: "/forbiddenwords/referee.png", wantStatus: http.StatusOK, wantContentType: "image/png"},
+		{path: "/forbiddenwords/words_img/bridge.png", wantStatus: http.StatusOK, wantContentType: "image/png"},
+		{path: "/forbiddenwords/.DS_Store", wantStatus: http.StatusNotFound},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			resp, err := http.Get(ts.URL + tc.path)
+			if err != nil {
+				t.Fatalf("GET %s: %v", tc.path, err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body %s: %v", tc.path, err)
+			}
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("GET %s status = %d, want %d", tc.path, resp.StatusCode, tc.wantStatus)
+			}
+			if tc.wantContentType != "" && !strings.Contains(resp.Header.Get("Content-Type"), tc.wantContentType) {
+				t.Errorf("GET %s Content-Type = %q, want %q", tc.path, resp.Header.Get("Content-Type"), tc.wantContentType)
+			}
+			if tc.wantContains != "" && !strings.Contains(string(body), tc.wantContains) {
+				t.Errorf("GET %s body missing %q", tc.path, tc.wantContains)
+			}
+			if tc.wantStatus == http.StatusOK && len(body) == 0 {
+				t.Errorf("GET %s returned empty body", tc.path)
+			}
+		})
+	}
+}

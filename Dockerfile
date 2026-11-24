@@ -24,9 +24,8 @@ FROM gcr.io/distroless/static-debian12:nonroot
 # Set the working directory inside the container.
 WORKDIR /app
 
-# Copy the built binary and static assets from the builder stage.
+# Copy the self-contained binary (with embedded assets) from the builder stage.
 COPY --from=builder /server /app/server
-COPY --from=builder /app/assets /app/assets
 
 # Set the command to run the application.
 CMD ["/app/server"]

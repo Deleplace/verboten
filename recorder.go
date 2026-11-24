@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -166,11 +166,15 @@ type gameRecorder struct {
 	human      wavTrackRecorder
 	guesser    wavTrackRecorder
 	eventsFile *os.File
+	logger     *slog.Logger
 }
 
-func newGameRecorder(baseDir, gameID, lang, languageCode, model, targetWord string, forbiddenWords []string) (*gameRecorder, error) {
+func newGameRecorder(baseDir, gameID, lang, languageCode, model, targetWord string, forbiddenWords []string, logger *slog.Logger) (*gameRecorder, error) {
 	if baseDir == "" {
 		baseDir = DefaultRecordingsDir
+	}
+	if logger == nil {
+		logger = slog.Default().With("game_id", gameID)
 	}
 	startedAt := time.Now().UTC()
 	folderName := fmt.Sprintf("%s_%s_%s_%s",
@@ -209,6 +213,7 @@ func newGameRecorder(baseDir, gameID, lang, languageCode, model, targetWord stri
 		human:      wavTrackRecorder{dir: dir, filename: "human.wav"},
 		guesser:    wavTrackRecorder{dir: dir, filename: "guesser.wav"},
 		eventsFile: eventsFile,
+		logger:     logger,
 	}, nil
 }
 
@@ -229,12 +234,12 @@ func (r *gameRecorder) appendEventLocked(ev RecordingEvent) {
 	}
 	line, err := json.Marshal(ev)
 	if err != nil {
-		log.Printf("Game %s marshal recording event error: %v", r.recording.GameID, err)
+		r.logger.Error("marshal recording event failed", "err", err)
 		return
 	}
 	line = append(line, '\n')
 	if _, err := r.eventsFile.Write(line); err != nil {
-		log.Printf("Game %s write events.jsonl error: %v", r.recording.GameID, err)
+		r.logger.Error("write events.jsonl failed", "err", err)
 	}
 }
 
@@ -250,7 +255,7 @@ func (r *gameRecorder) RecordHumanAudio(pcm []byte, mimeType string) {
 	offsetMs := r.offsetMsLocked(time.Now().UTC())
 	byteOffset, err := r.human.writeChunk(offsetMs, pcm, mimeType)
 	if err != nil {
-		log.Printf("Game %s record human audio error: %v", r.recording.GameID, err)
+		r.logger.Error("record human audio failed", "err", err)
 		return
 	}
 	r.appendEventLocked(RecordingEvent{
@@ -274,7 +279,7 @@ func (r *gameRecorder) RecordGuesserAudio(pcm []byte, mimeType string) {
 	offsetMs := r.offsetMsLocked(time.Now().UTC())
 	byteOffset, err := r.guesser.writeChunk(offsetMs, pcm, mimeType)
 	if err != nil {
-		log.Printf("Game %s record guesser audio error: %v", r.recording.GameID, err)
+		r.logger.Error("record guesser audio failed", "err", err)
 		return
 	}
 	r.appendEventLocked(RecordingEvent{
