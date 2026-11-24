@@ -1,0 +1,54 @@
+{
+  "game_id": "JmX4",
+  "outcome": "won",
+  "language": "fr",
+  "language_code": "fr-FR",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-24T10:52:09.605343Z",
+  "ended_at": "2026-11-24T10:52:20.841591Z",
+  "duration_ms": 11236,
+  "target_word": "Yacht",
+  "forbidden_words": [
+    "Bateau",
+    "Voile",
+    "Eau",
+    "Luxe"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3396,
+    "last_packet_ms": 11235,
+    "packet_count": 123,
+    "total_bytes": 251904,
+    "audio_duration_ms": 7872
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 10033,
+    "last_packet_ms": 10390,
+    "packet_count": 6,
+    "total_bytes": 47070,
+    "audio_duration_ms": 980
+  },
+  "transcripts": [
+    {
+      "offset_ms": 9864,
+      "speaker": "human",
+      "text": "Alors ça permet de faire des croisières mais en général c'est les milliardaires qui ont un nom."
+    },
+    {
+      "offset_ms": 10033,
+      "speaker": "guesser",
+      "text": "Yacht"
+    }
+  ],
+  "judge_events": []
+}

@@ -1,0 +1,54 @@
+{
+  "game_id": "uksv",
+  "outcome": "won",
+  "language": "fr",
+  "language_code": "fr-FR",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-24T10:46:15.037955Z",
+  "ended_at": "2026-11-24T10:46:40.338729Z",
+  "duration_ms": 25300,
+  "target_word": "Cerf-volant",
+  "forbidden_words": [
+    "Voler",
+    "Vent",
+    "Corde",
+    "Ciel"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3228,
+    "last_packet_ms": 25259,
+    "packet_count": 344,
+    "total_bytes": 704512,
+    "audio_duration_ms": 22016
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 24096,
+    "last_packet_ms": 24346,
+    "packet_count": 7,
+    "total_bytes": 42722,
+    "audio_duration_ms": 890
+  },
+  "transcripts": [
+    {
+      "offset_ms": 23524,
+      "speaker": "human",
+      "text": "Alors, il faut de l'air pour jouer à ce jeu. Les enfants adorent, mais il y a aussi des compétitions. C'est souvent de toutes les couleurs, ça entraîne. Euh il faut de l'air euh il faut regarder en l'air, il faut un long fil. Pour"
+    },
+    {
+      "offset_ms": 24096,
+      "speaker": "guesser",
+      "text": "Cerf-volant"
+    }
+  ],
+  "judge_events": []
+}

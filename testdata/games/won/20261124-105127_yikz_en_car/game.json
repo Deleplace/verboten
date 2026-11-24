@@ -1,0 +1,54 @@
+{
+  "game_id": "YIkZ",
+  "outcome": "won",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-24T10:51:27.217874Z",
+  "ended_at": "2026-11-24T10:51:50.398289Z",
+  "duration_ms": 23180,
+  "target_word": "Car",
+  "forbidden_words": [
+    "Wheel",
+    "Drive",
+    "Road",
+    "Engine"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3249,
+    "last_packet_ms": 23147,
+    "packet_count": 311,
+    "total_bytes": 636928,
+    "audio_duration_ms": 19904
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 21976,
+    "last_packet_ms": 22181,
+    "packet_count": 6,
+    "total_bytes": 42750,
+    "audio_duration_ms": 890
+  },
+  "transcripts": [
+    {
+      "offset_ms": 21927,
+      "speaker": "human",
+      "text": "It lets me go to work, but it's not a train, it's not a bike, it's not my feet. It's very useful. Many people have it, at least for their family. It has doors. A trunk."
+    },
+    {
+      "offset_ms": 21975,
+      "speaker": "guesser",
+      "text": "Car"
+    }
+  ],
+  "judge_events": []
+}

@@ -1,0 +1,54 @@
+{
+  "game_id": "0eSL",
+  "outcome": "won",
+  "language": "en",
+  "language_code": "en-US",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-24T10:46:48.964985Z",
+  "ended_at": "2026-11-24T10:47:07.807183Z",
+  "duration_ms": 18842,
+  "target_word": "Kite",
+  "forbidden_words": [
+    "Fly",
+    "Wind",
+    "String",
+    "Sky"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3207,
+    "last_packet_ms": 18828,
+    "packet_count": 245,
+    "total_bytes": 501760,
+    "audio_duration_ms": 15680
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 17638,
+    "last_packet_ms": 17915,
+    "packet_count": 7,
+    "total_bytes": 44162,
+    "audio_duration_ms": 920
+  },
+  "transcripts": [
+    {
+      "offset_ms": 17626,
+      "speaker": "human",
+      "text": "It's a toy, very, very high. Um, tied by a rope. And children love it."
+    },
+    {
+      "offset_ms": 17638,
+      "speaker": "guesser",
+      "text": "Kite"
+    }
+  ],
+  "judge_events": []
+}

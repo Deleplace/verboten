@@ -1,0 +1,54 @@
+{
+  "game_id": "B6Ks",
+  "outcome": "won",
+  "language": "fr",
+  "language_code": "fr-FR",
+  "model": "gemini-3.1-flash-live-preview",
+  "started_at": "2026-11-24T10:45:51.995347Z",
+  "ended_at": "2026-11-24T10:46:01.434344Z",
+  "duration_ms": 9438,
+  "target_word": "Yacht",
+  "forbidden_words": [
+    "Bateau",
+    "Voile",
+    "Eau",
+    "Luxe"
+  ],
+  "human_audio": {
+    "file": "human.wav",
+    "mime_type": "audio/pcm;rate=16000",
+    "sample_rate": 16000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 3420,
+    "last_packet_ms": 9381,
+    "packet_count": 94,
+    "total_bytes": 192512,
+    "audio_duration_ms": 6016
+  },
+  "guesser_audio": {
+    "file": "guesser.wav",
+    "mime_type": "audio/pcm;rate=24000",
+    "sample_rate": 24000,
+    "bits_per_sample": 16,
+    "channels": 1,
+    "first_packet_ms": 8235,
+    "last_packet_ms": 8244,
+    "packet_count": 5,
+    "total_bytes": 29282,
+    "audio_duration_ms": 610
+  },
+  "transcripts": [
+    {
+      "offset_ms": 8234,
+      "speaker": "human",
+      "text": "Bah ça c'est un truc dans la mer mais conduit vraiment par des riches."
+    },
+    {
+      "offset_ms": 8235,
+      "speaker": "guesser",
+      "text": "Yacht"
+    }
+  ],
+  "judge_events": []
+}
