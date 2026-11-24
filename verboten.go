@@ -377,7 +377,6 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 	var (
 		prefixPaddingMs  int32 = 100
 		guesserSilenceMs int32 = 500
-		judgeSilenceMs   int32 = 100
 	)
 	guesserRealtimeInputConfig := &genai.RealtimeInputConfig{
 		AutomaticActivityDetection: &genai.AutomaticActivityDetection{
@@ -387,13 +386,14 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 			SilenceDurationMs:        &guesserSilenceMs,
 		},
 	}
+	// The Judge uses manual activity detection (driven by judgeVAD) with NO_INTERRUPTION
+	// because gemini-3.1-flash-live-preview ignores short SilenceDurationMs values in auto-VAD
+	// and can otherwise delay evaluating continuous speech by 15+ seconds.
 	judgeRealtimeInputConfig := &genai.RealtimeInputConfig{
 		AutomaticActivityDetection: &genai.AutomaticActivityDetection{
-			StartOfSpeechSensitivity: genai.StartSensitivityHigh,
-			EndOfSpeechSensitivity:   genai.EndSensitivityHigh,
-			PrefixPaddingMs:          &prefixPaddingMs,
-			SilenceDurationMs:        &judgeSilenceMs,
+			Disabled: true,
 		},
+		ActivityHandling: genai.ActivityHandlingNoInterruption,
 	}
 
 	audioTranscriptionConfig := &genai.AudioTranscriptionConfig{}
@@ -505,6 +505,12 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 		defer writeMu.Unlock()
 		return c.WriteMessage(websocket.TextMessage, payload)
 	}
+	sendToJudge := func(input genai.LiveRealtimeInput) error {
+		judgeWriteMu.Lock()
+		defer judgeWriteMu.Unlock()
+		return sessionJudge.SendRealtimeInput(input)
+	}
+	jVAD := newJudgeVAD(sendToJudge)
 
 	loopsWG.Add(1)
 	go func() {
@@ -569,6 +575,13 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 					gameLog.Warn("judge model disconnected", "err", err)
 				}
 				return
+			}
+			if message.ServerContent != nil && message.ServerContent.TurnComplete {
+				if !gameOver.Load() {
+					if err := jVAD.OnTurnComplete(); err != nil && !gameOver.Load() {
+						gameLog.Warn("flush buffered audio to judge failed", "err", err)
+					}
+				}
 			}
 			if message.ToolCall != nil {
 				for _, fc := range message.ToolCall.FunctionCalls {
@@ -717,11 +730,12 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 		if err := session.SendRealtimeInput(realtimeInput); err != nil && !gameOver.Load() {
 			gameLog.Warn("send audio to guesser failed", "err", err)
 		}
-		judgeWriteMu.Lock()
-		err = sessionJudge.SendRealtimeInput(realtimeInput)
-		judgeWriteMu.Unlock()
-		if err != nil && !gameOver.Load() {
-			log.Println("send to judge error: ", err)
+		if realtimeInput.Audio != nil && len(realtimeInput.Audio.Data) > 0 {
+			if err := jVAD.FeedAudio(realtimeInput.Audio.Data, realtimeInput.Audio.MIMEType); err != nil && !gameOver.Load() {
+				gameLog.Warn("send audio to judge failed", "err", err)
+			}
+		} else if err := sendToJudge(realtimeInput); err != nil && !gameOver.Load() {
+			gameLog.Warn("send audio to judge failed", "err", err)
 		}
 	}
 }

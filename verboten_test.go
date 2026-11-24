@@ -147,8 +147,8 @@ func TestDoubleLivestreamJudgeAndGuesser(t *testing.T) {
 			t.Errorf("judge setup missing forbidden word %q: %s", w, judgeSess.setupRaw)
 		}
 	}
-	if !strings.Contains(judgeSess.setupRaw, `"END_SENSITIVITY_HIGH"`) || !strings.Contains(judgeSess.setupRaw, `"silenceDurationMs":100`) {
-		t.Errorf("judge setup missing 100ms high-sensitivity VAD: %s", judgeSess.setupRaw)
+	if !strings.Contains(judgeSess.setupRaw, `"disabled":true`) || !strings.Contains(judgeSess.setupRaw, `"NO_INTERRUPTION"`) {
+		t.Errorf("judge setup missing manual VAD + NO_INTERRUPTION: %s", judgeSess.setupRaw)
 	}
 
 	// Drain initial setupComplete forwarded from Guesser to browser.
@@ -158,7 +158,8 @@ func TestDoubleLivestreamJudgeAndGuesser(t *testing.T) {
 		t.Fatalf("read initial guesser message: %v", err)
 	}
 
-	// Browser sends a single 16kHz voice packet -> BOTH Guesser and Judge must receive it.
+	// Browser sends a single 16kHz voice packet -> BOTH Guesser and Judge must receive it
+	// (with Judge receiving an ActivityStart signal before the speech packet).
 	humanPCM := []byte{0x01, 0x02, 0x03, 0x04}
 	humanB64 := base64.StdEncoding.EncodeToString(humanPCM)
 	audioMsg := `{"audio":{"data":"` + humanB64 + `","mimeType":"audio/pcm;rate=16000"}}`
@@ -166,18 +167,30 @@ func TestDoubleLivestreamJudgeAndGuesser(t *testing.T) {
 		t.Fatalf("browser write audio: %v", err)
 	}
 
-	for name, ch := range map[string]chan string{
-		"guesser": guesserSess.audioPackets,
-		"judge":   judgeSess.audioPackets,
-	} {
-		select {
-		case pkt := <-ch:
-			if !strings.Contains(pkt, humanB64) {
-				t.Errorf("%s received unexpected packet: %s", name, pkt)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatalf("timed out waiting for %s to receive voice packet", name)
+	select {
+	case pkt := <-guesserSess.audioPackets:
+		if !strings.Contains(pkt, humanB64) {
+			t.Errorf("guesser received unexpected packet: %s", pkt)
 		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for guesser to receive voice packet")
+	}
+
+	select {
+	case pkt := <-judgeSess.audioPackets:
+		if !strings.Contains(pkt, `"activityStart"`) {
+			t.Errorf("judge expected activityStart before speech audio, got: %s", pkt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for judge activityStart")
+	}
+	select {
+	case pkt := <-judgeSess.audioPackets:
+		if !strings.Contains(pkt, humanB64) {
+			t.Errorf("judge received unexpected audio packet: %s", pkt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for judge to receive voice packet")
 	}
 
 	// Guesser streams audio + transcription/guess back to browser.
@@ -1231,4 +1244,205 @@ func TestEmbeddedAssetsServing(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStructuredSlogOutput(t *testing.T) {
+	var buf bytes.Buffer
+	logger := NewLogger(&buf)
+	logger.Info("starting game", "game_id", "ab12", "lang", "fr", "target", "Guitare")
+	logger.Warn("guesser model disconnected", "game_id", "ab12")
+	logger.Error("decision 1 check failed", "game_id", "ab12", "spoken", "porte", "forbidden", "Porter")
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d JSON log lines, want 3:\n%s", len(lines), buf.String())
+	}
+
+	wantSeverities := []string{"INFO", "WARNING", "ERROR"}
+	wantMessages := []string{"starting game", "guesser model disconnected", "decision 1 check failed"}
+	for i, line := range lines {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("line %d is not valid JSON: %v (%s)", i, err, line)
+		}
+		if got := entry["severity"]; got != wantSeverities[i] {
+			t.Errorf("line %d severity = %v, want %q", i, got, wantSeverities[i])
+		}
+		if got := entry["message"]; got != wantMessages[i] {
+			t.Errorf("line %d message = %v, want %q", i, got, wantMessages[i])
+		}
+		if got := entry["game_id"]; got != "ab12" {
+			t.Errorf("line %d game_id = %v, want %q", i, got, "ab12")
+		}
+		if _, ok := entry["time"]; !ok {
+			t.Errorf("line %d missing time field: %s", i, line)
+		}
+	}
+}
+
+func makeConstPCM16(samples int, amp int16) []byte {
+	b := make([]byte, samples*2)
+	for i := 0; i < samples; i++ {
+		binary.LittleEndian.PutUint16(b[i*2:i*2+2], uint16(amp))
+	}
+	return b
+}
+
+func TestJudgeVAD(t *testing.T) {
+	const mime = "audio/pcm;rate=16000"
+	silentChunk := makeConstPCM16(1024, 5) // 64 ms silence (RMS=5)
+	speechChunk := makeConstPCM16(1024, 800)
+
+	t.Run("silence_pause_triggers_activity_end", func(t *testing.T) {
+		var sent []genai.LiveRealtimeInput
+		v := newJudgeVAD(func(in genai.LiveRealtimeInput) error {
+			sent = append(sent, in)
+			return nil
+		})
+
+		// Leading silence should not open an activity.
+		for i := 0; i < 5; i++ {
+			_ = v.FeedAudio(silentChunk, mime)
+		}
+		if len(sent) != 0 {
+			t.Fatalf("expected 0 messages during leading silence, got %d", len(sent))
+		}
+
+		// 640 ms of speech -> ActivityStart + 3 pre-roll chunks (including onset) + 9 speech chunks.
+		for i := 0; i < 10; i++ {
+			_ = v.FeedAudio(speechChunk, mime)
+		}
+		if len(sent) == 0 || sent[0].ActivityStart == nil {
+			t.Fatalf("expected first signal to be ActivityStart, got %+v", sent)
+		}
+
+		// Brief 256 ms mid-clause pause (4 chunks) must NOT close the turn prematurely.
+		for i := 0; i < 4; i++ {
+			_ = v.FeedAudio(silentChunk, mime)
+		}
+		if sent[len(sent)-1].ActivityEnd != nil {
+			t.Fatalf("unexpected ActivityEnd after brief 256ms pause")
+		}
+
+		// Additional 320 ms of silence (total 576 ms >= 550 ms) -> ActivityEnd.
+		for i := 0; i < 5; i++ {
+			_ = v.FeedAudio(silentChunk, mime)
+		}
+		last := sent[len(sent)-1]
+		if last.ActivityEnd == nil {
+			t.Fatalf("expected ActivityEnd after 576ms silence, last=%+v", last)
+		}
+	})
+
+	t.Run("single_chunk_dip_does_not_soft_split_mid_word", func(t *testing.T) {
+		var sent []genai.LiveRealtimeInput
+		v := newJudgeVAD(func(in genai.LiveRealtimeInput) error {
+			sent = append(sent, in)
+			return nil
+		})
+
+		// 40 speech chunks = 2560 ms (>= judgeSoftMaxSpeechMs).
+		for i := 0; i < 40; i++ {
+			_ = v.FeedAudio(speechChunk, mime)
+		}
+		// Single 64 ms quiet chunk (stop-consonant closure) must NOT trigger soft split.
+		_ = v.FeedAudio(silentChunk, mime)
+		if sent[len(sent)-1].ActivityEnd != nil {
+			t.Fatalf("unexpected soft split on a single 64ms quiet chunk")
+		}
+		// Second consecutive quiet chunk (128 ms >= judgeSoftDipSilenceMs) MUST trigger soft split.
+		_ = v.FeedAudio(silentChunk, mime)
+		if sent[len(sent)-1].ActivityEnd == nil {
+			t.Fatalf("expected soft split after 128ms quiet dip past soft max")
+		}
+	})
+
+	t.Run("continuous_speech_splits_at_hard_max_and_replays_overlap", func(t *testing.T) {
+		var sent []genai.LiveRealtimeInput
+		v := newJudgeVAD(func(in genai.LiveRealtimeInput) error {
+			sent = append(sent, in)
+			return nil
+		})
+
+		// 66 nonstop loud chunks (~4.22 s) without any pause.
+		for i := 0; i < 66; i++ {
+			_ = v.FeedAudio(speechChunk, mime)
+		}
+		endCount := 0
+		for _, m := range sent {
+			if m.ActivityEnd != nil {
+				endCount++
+			}
+		}
+		if endCount != 1 {
+			t.Fatalf("expected 1 ActivityEnd during 4.22s continuous speech, got %d", endCount)
+		}
+
+		// While waiting for TurnComplete, chunks are buffered; OnTurnComplete flushes them
+		// with overlap into a fresh ActivityStart turn.
+		before := len(sent)
+		if err := v.OnTurnComplete(); err != nil {
+			t.Fatalf("OnTurnComplete: %v", err)
+		}
+		if len(sent) <= before || sent[before].ActivityStart == nil {
+			t.Fatalf("expected ActivityStart on TurnComplete flush, got %+v", sent[before:])
+		}
+	})
+
+	t.Run("stale_overlap_discarded_after_prolonged_silence", func(t *testing.T) {
+		var sent []genai.LiveRealtimeInput
+		v := newJudgeVAD(func(in genai.LiveRealtimeInput) error {
+			sent = append(sent, in)
+			return nil
+		})
+
+		// Trigger a soft split (retains overlap).
+		for i := 0; i < 40; i++ {
+			_ = v.FeedAudio(speechChunk, mime)
+		}
+		_ = v.FeedAudio(silentChunk, mime)
+		_ = v.FeedAudio(silentChunk, mime)
+		if err := v.OnTurnComplete(); err != nil {
+			t.Fatalf("OnTurnComplete: %v", err)
+		}
+
+		// Prolonged silence (>= 550 ms) after the split should discard stale overlap.
+		for i := 0; i < 10; i++ {
+			_ = v.FeedAudio(silentChunk, mime)
+		}
+		before := len(sent)
+		_ = v.FeedAudio(speechChunk, mime)
+		// Should emit ActivityStart + preRoll (3 chunks), NOT overlap (6) + onset (1).
+		gotTurnPrefix := len(sent) - before
+		if gotTurnPrefix != 1+judgePreRollChunks {
+			t.Fatalf("expected ActivityStart + %d preRoll chunks after prolonged silence, got %d messages", judgePreRollChunks, gotTurnPrefix)
+		}
+	})
+
+	t.Run("turn_timeout_unblocks_waiting_state", func(t *testing.T) {
+		now := time.Unix(1000, 0)
+		var sent []genai.LiveRealtimeInput
+		v := newJudgeVAD(func(in genai.LiveRealtimeInput) error {
+			sent = append(sent, in)
+			return nil
+		})
+		v.now = func() time.Time { return now }
+
+		for i := 0; i < 10; i++ {
+			_ = v.FeedAudio(speechChunk, mime)
+		}
+		for i := 0; i < 9; i++ {
+			_ = v.FeedAudio(silentChunk, mime)
+		}
+		// Buffer speech while waiting for TurnComplete.
+		_ = v.FeedAudio(speechChunk, mime)
+		countWhileWaiting := len(sent)
+
+		// Advance past timeout without receiving TurnComplete -> next FeedAudio must unblock and start a new turn.
+		now = now.Add(judgeTurnResponseTimeout + time.Millisecond)
+		_ = v.FeedAudio(speechChunk, mime)
+		if len(sent) <= countWhileWaiting || sent[countWhileWaiting].ActivityStart == nil {
+			t.Fatalf("expected timeout to unblock and emit ActivityStart, got %+v", sent[countWhileWaiting:])
+		}
+	})
 }
