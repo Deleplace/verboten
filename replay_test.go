@@ -327,8 +327,16 @@ func replayGame(t *testing.T, client *genai.Client, gameDir string, expectWin bo
 		}
 	}
 
-	t.Logf("target=%q forbidden=%q | won=%v judge=%+v | guesser=%q | human=%q",
-		rec.TargetWord, rec.ForbiddenWords, res.won, res.judgeVerdict, res.guesserSpeech, res.humanSpeech)
+	if res.judgeVerdict != nil {
+		t.Logf("target=%q forbidden=%q | won=%v judge={lost:%v reason:%q spoken:%q forbidden:%q message:%q audioMime:%q audioB64Len:%d} | guesser=%q | human=%q",
+			rec.TargetWord, rec.ForbiddenWords, res.won,
+			res.judgeVerdict.Lost, res.judgeVerdict.Reason, res.judgeVerdict.SpokenWord, res.judgeVerdict.ForbiddenWord,
+			res.judgeVerdict.Message, res.judgeVerdict.AudioMimeType, len(res.judgeVerdict.Audio),
+			res.guesserSpeech, res.humanSpeech)
+	} else {
+		t.Logf("target=%q forbidden=%q | won=%v judge=<nil> | guesser=%q | human=%q",
+			rec.TargetWord, rec.ForbiddenWords, res.won, res.guesserSpeech, res.humanSpeech)
+	}
 
 	if expectWin {
 		if res.judgeVerdict != nil && res.judgeVerdict.Lost {

@@ -1446,3 +1446,511 @@ func TestJudgeVAD(t *testing.T) {
 		}
 	})
 }
+
+func TestFormatJudgeLossText(t *testing.T) {
+	cases := []struct {
+		lang, spoken, forbidden, reason string
+		want                            string
+	}{
+		{
+			lang: "fr", spoken: "porte", forbidden: "porter", reason: "resembling",
+			want: "Vous avez dit le mot « porte », qui est trop proche du mot interdit « porter ».",
+		},
+		{
+			lang: "fr", spoken: "l'instrument", forbidden: "Instrument", reason: "exact",
+			want: "Vous avez dit le mot interdit « Instrument ».",
+		},
+		{
+			lang: "fr", spoken: "lemon", forbidden: "Citron", reason: "translation",
+			want: "Vous avez dit le mot « lemon », qui est une traduction du mot à deviner « Citron ».",
+		},
+		{
+			lang: "en", spoken: "playing", forbidden: "Play", reason: "resembling",
+			want: `You said the word "playing", which is too close to the forbidden word "Play".`,
+		},
+		{
+			lang: "en", spoken: "home", forbidden: "Home", reason: "exact",
+			want: `You said the forbidden word "Home".`,
+		},
+		{
+			lang: "en", spoken: "ordinateur", forbidden: "Computer", reason: "translation",
+			want: `You said the word "ordinateur", which is a translation of the target word "Computer".`,
+		},
+	}
+	for _, tc := range cases {
+		if got := formatJudgeLossText(tc.lang, tc.spoken, tc.forbidden, tc.reason); got != tc.want {
+			t.Errorf("formatJudgeLossText(%q,%q,%q,%q) = %q, want %q",
+				tc.lang, tc.spoken, tc.forbidden, tc.reason, got, tc.want)
+		}
+	}
+}
+
+func TestJudgeLossConcurrentDecisionAndTTS(t *testing.T) {
+	fakeWAV := []byte("RIFF\x24\x00\x00\x00WAVEfmt mock-wav-audio")
+
+	t.Run("resembling_confirmed_runs_A_and_B_concurrently", func(t *testing.T) {
+		type capturedSession struct {
+			isJudge bool
+			conn    *websocket.Conn
+		}
+		var (
+			mu       sync.Mutex
+			sessions []*capturedSession
+			bothUp   = make(chan struct{})
+		)
+
+		fakeGemini := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			c, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				return
+			}
+			_, setupBytes, err := c.ReadMessage()
+			if err != nil {
+				c.Close()
+				return
+			}
+			sess := &capturedSession{
+				isJudge: strings.Contains(string(setupBytes), declareLossFuncName),
+				conn:    c,
+			}
+			_ = c.WriteMessage(websocket.TextMessage, []byte(`{"setupComplete":{}}`))
+
+			mu.Lock()
+			sessions = append(sessions, sess)
+			if len(sessions) == 2 {
+				close(bothUp)
+			}
+			mu.Unlock()
+
+			for {
+				if _, _, err := c.ReadMessage(); err != nil {
+					return
+				}
+			}
+		}))
+		defer fakeGemini.Close()
+
+		client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+			APIKey:  "test-api-key",
+			Backend: genai.BackendGeminiAPI,
+			HTTPOptions: genai.HTTPOptions{
+				BaseURL:    "ws://" + strings.TrimPrefix(fakeGemini.URL, "http://"),
+				APIVersion: "v1beta",
+			},
+		})
+		if err != nil {
+			t.Fatalf("NewClient: %v", err)
+		}
+
+		// Synchronization barrier proving Call A (Decision 1) and Call B (TTS) run concurrently:
+		// Call A waits for Call B to have started before returning, and Call B waits for Call A
+		// to have started before finishing. Neither can complete unless both run in parallel!
+		callAStarted := make(chan struct{})
+		callBStarted := make(chan struct{})
+		var gotTTSText string
+		var gotTTSLang string
+
+		gameServer := NewServer(client)
+		gameServer.RecordingsDir = t.TempDir()
+		gameServer.sameRootProbFunc = func(ctx context.Context, lang, spoken, forbidden string) (float64, error) {
+			close(callAStarted)
+			select {
+			case <-callBStarted:
+			case <-time.After(2 * time.Second):
+				t.Errorf("Call B (TTS) did not start concurrently with Call A (Decision 1)")
+			}
+			return 0.94, nil
+		}
+		gameServer.judgeTTSFunc = func(ctx context.Context, lang, text string) ([]byte, string, error) {
+			gotTTSLang = lang
+			gotTTSText = text
+			close(callBStarted)
+			select {
+			case <-callAStarted:
+			case <-time.After(2 * time.Second):
+				t.Errorf("Call A (Decision 1) did not start concurrently with Call B (TTS)")
+			}
+			// Simulate TTS taking slightly longer than Decision 1.
+			time.Sleep(30 * time.Millisecond)
+			return fakeWAV, "audio/wav", nil
+		}
+
+		handlerDone := make(chan struct{})
+		appServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer close(handlerDone)
+			gameServer.liveGame(w, r)
+		}))
+		defer appServer.Close()
+
+		browserURL := "ws://" + strings.TrimPrefix(appServer.URL, "http://") +
+			"/live/fr?target=Dragon&forbidden=Dragon&forbidden=Porter"
+		browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, nil)
+		if err != nil {
+			t.Fatalf("dial liveGame: %v", err)
+		}
+		defer func() {
+			_ = browserConn.Close()
+			select {
+			case <-handlerDone:
+			case <-time.After(3 * time.Second):
+			}
+		}()
+
+		select {
+		case <-bothUp:
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for both sessions")
+		}
+
+		mu.Lock()
+		var judgeSess, guesserSess *capturedSession
+		for _, s := range sessions {
+			if s.isJudge {
+				judgeSess = s
+			} else {
+				guesserSess = s
+			}
+		}
+		mu.Unlock()
+		defer judgeSess.conn.Close()
+		defer guesserSess.conn.Close()
+
+		_ = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		if _, _, err := browserConn.ReadMessage(); err != nil {
+			t.Fatalf("read setupComplete: %v", err)
+		}
+
+		toolCall := `{"toolCall":{"functionCalls":[{"id":"c1","name":"declare_loss","args":{"forbidden_word":"porter","spoken_word":"porte","reason":"resembling"}}]}}`
+		if err := judgeSess.conn.WriteMessage(websocket.TextMessage, []byte(toolCall)); err != nil {
+			t.Fatalf("write toolCall: %v", err)
+		}
+
+		_ = browserConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		_, gotBytes, err := browserConn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read judge verdict: %v", err)
+		}
+
+		var jm judgeMessage
+		if err := json.Unmarshal(gotBytes, &jm); err != nil {
+			t.Fatalf("unmarshal verdict: %v", err)
+		}
+		if jm.Judge == nil || !jm.Judge.Lost {
+			t.Fatalf("expected loss verdict, got %+v", jm.Judge)
+		}
+		wantMsg := "Vous avez dit le mot « porte », qui est trop proche du mot interdit « porter »."
+		if jm.Judge.Message != wantMsg {
+			t.Errorf("Judge.Message = %q, want %q", jm.Judge.Message, wantMsg)
+		}
+		if gotTTSLang != "fr" || gotTTSText != wantMsg {
+			t.Errorf("TTS called with (%q, %q), want (%q, %q)", gotTTSLang, gotTTSText, "fr", wantMsg)
+		}
+		if jm.Judge.AudioMimeType != "audio/wav" {
+			t.Errorf("Judge.AudioMimeType = %q, want audio/wav", jm.Judge.AudioMimeType)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(jm.Judge.Audio)
+		if err != nil {
+			t.Fatalf("decode base64 Judge.Audio: %v", err)
+		}
+		if !bytes.Equal(decoded, fakeWAV) {
+			t.Errorf("decoded Judge.Audio = %q, want %q", decoded, fakeWAV)
+		}
+	})
+
+	t.Run("resembling_rejected_cancels_TTS_and_keeps_listening", func(t *testing.T) {
+		type capturedSession struct {
+			isJudge       bool
+			conn          *websocket.Conn
+			toolResponses chan string
+		}
+		var (
+			mu       sync.Mutex
+			sessions []*capturedSession
+			bothUp   = make(chan struct{})
+		)
+
+		fakeGemini := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			c, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				return
+			}
+			_, setupBytes, err := c.ReadMessage()
+			if err != nil {
+				c.Close()
+				return
+			}
+			sess := &capturedSession{
+				isJudge:       strings.Contains(string(setupBytes), declareLossFuncName),
+				conn:          c,
+				toolResponses: make(chan string, 4),
+			}
+			_ = c.WriteMessage(websocket.TextMessage, []byte(`{"setupComplete":{}}`))
+
+			mu.Lock()
+			sessions = append(sessions, sess)
+			if len(sessions) == 2 {
+				close(bothUp)
+			}
+			mu.Unlock()
+
+			for {
+				_, msg, err := c.ReadMessage()
+				if err != nil {
+					return
+				}
+				if strings.Contains(string(msg), "toolResponse") {
+					sess.toolResponses <- string(msg)
+				}
+			}
+		}))
+		defer fakeGemini.Close()
+
+		client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+			APIKey:  "test-api-key",
+			Backend: genai.BackendGeminiAPI,
+			HTTPOptions: genai.HTTPOptions{
+				BaseURL:    "ws://" + strings.TrimPrefix(fakeGemini.URL, "http://"),
+				APIVersion: "v1beta",
+			},
+		})
+		if err != nil {
+			t.Fatalf("NewClient: %v", err)
+		}
+
+		ttsStarted := make(chan struct{})
+		ttsCanceled := make(chan struct{})
+
+		gameServer := NewServer(client)
+		gameServer.RecordingsDir = t.TempDir()
+		gameServer.sameRootProbFunc = func(ctx context.Context, lang, spoken, forbidden string) (float64, error) {
+			<-ttsStarted
+			return 0.07, nil // Rejected (< 75%)
+		}
+		gameServer.judgeTTSFunc = func(ctx context.Context, lang, text string) ([]byte, string, error) {
+			close(ttsStarted)
+			<-ctx.Done()
+			close(ttsCanceled)
+			return nil, "", ctx.Err()
+		}
+
+		handlerDone := make(chan struct{})
+		appServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer close(handlerDone)
+			gameServer.liveGame(w, r)
+		}))
+		defer appServer.Close()
+
+		browserURL := "ws://" + strings.TrimPrefix(appServer.URL, "http://") +
+			"/live/fr?target=Dragon&forbidden=Dragon&forbidden=Feu"
+		browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, nil)
+		if err != nil {
+			t.Fatalf("dial liveGame: %v", err)
+		}
+		defer func() {
+			_ = browserConn.Close()
+			select {
+			case <-handlerDone:
+			case <-time.After(3 * time.Second):
+			}
+		}()
+
+		select {
+		case <-bothUp:
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for both sessions")
+		}
+
+		mu.Lock()
+		var judgeSess, guesserSess *capturedSession
+		for _, s := range sessions {
+			if s.isJudge {
+				judgeSess = s
+			} else {
+				guesserSess = s
+			}
+		}
+		mu.Unlock()
+		defer judgeSess.conn.Close()
+		defer guesserSess.conn.Close()
+
+		_ = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		if _, _, err := browserConn.ReadMessage(); err != nil {
+			t.Fatalf("read setupComplete: %v", err)
+		}
+
+		toolCall := `{"toolCall":{"functionCalls":[{"id":"c-ignore","name":"declare_loss","args":{"forbidden_word":"Feu","spoken_word":"flamme","reason":"resembling"}}]}}`
+		if err := judgeSess.conn.WriteMessage(websocket.TextMessage, []byte(toolCall)); err != nil {
+			t.Fatalf("write toolCall: %v", err)
+		}
+
+		select {
+		case <-ttsCanceled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("expected Call B (TTS) context to be cancelled after Decision 1 rejected (< 75%)")
+		}
+
+		select {
+		case resp := <-judgeSess.toolResponses:
+			if !strings.Contains(resp, "Ignored") {
+				t.Errorf("expected Ignored toolResponse, got %s", resp)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("expected toolResponse to keep Judge listening")
+		}
+
+		// Confirm browser did NOT receive any loss verdict.
+		_ = browserConn.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+		if _, msg, err := browserConn.ReadMessage(); err == nil {
+			t.Fatalf("expected no browser message after ignored call, got: %s", string(msg))
+		}
+	})
+}
+
+func TestServeTTSEndpointAndCache(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		apiCalls int
+		gotModel string
+		gotVoice string
+		gotLang  string
+		gotText  string
+	)
+	fakeAudio := []byte("RIFF\x24\x00\x00\x00WAVEfmt cached-tts-audio")
+
+	fakeAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		apiCalls++
+		gotModel = r.URL.Path
+		mu.Unlock()
+
+		var reqBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err == nil {
+			if contents, ok := reqBody["contents"].([]any); ok && len(contents) > 0 {
+				if first, ok := contents[0].(map[string]any); ok {
+					if parts, ok := first["parts"].([]any); ok && len(parts) > 0 {
+						if part0, ok := parts[0].(map[string]any); ok {
+							mu.Lock()
+							gotText, _ = part0["text"].(string)
+							mu.Unlock()
+						}
+					}
+				}
+			}
+			if gc, ok := reqBody["generationConfig"].(map[string]any); ok {
+				if sc, ok := gc["speechConfig"].(map[string]any); ok {
+					mu.Lock()
+					gotLang, _ = sc["languageCode"].(string)
+					if vc, ok := sc["voiceConfig"].(map[string]any); ok {
+						if pvc, ok := vc["prebuiltVoiceConfig"].(map[string]any); ok {
+							gotVoice, _ = pvc["voiceName"].(string)
+						}
+					}
+					mu.Unlock()
+				}
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"candidates": []any{
+				map[string]any{
+					"content": map[string]any{
+						"parts": []any{
+							map[string]any{
+								"inlineData": map[string]any{
+									"mimeType": "audio/wav",
+									"data":     base64.StdEncoding.EncodeToString(fakeAudio),
+								},
+							},
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer fakeAPI.Close()
+
+	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+		APIKey:  "test-api-key",
+		Backend: genai.BackendGeminiAPI,
+		HTTPOptions: genai.HTTPOptions{
+			BaseURL:    fakeAPI.URL,
+			APIVersion: "v1beta",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	srv := NewServer(client)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// 1. Valid POST /tts calls Gemini TTS with masculine voice Charon and fr-FR.
+	resp, err := http.Post(ts.URL+"/tts", "application/json", strings.NewReader(`{"lang":"fr","text":"Bravo !"}`))
+	if err != nil {
+		t.Fatalf("POST /tts: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", resp.StatusCode, string(body))
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "audio/wav" {
+		t.Errorf("Content-Type = %q, want audio/wav", ct)
+	}
+	if !bytes.Equal(body, fakeAudio) {
+		t.Errorf("body = %q, want %q", body, fakeAudio)
+	}
+
+	mu.Lock()
+	if !strings.Contains(gotModel, DefaultTTSModel) {
+		t.Errorf("model path = %q, want containing %q", gotModel, DefaultTTSModel)
+	}
+	if gotVoice != DefaultJudgeVoice {
+		t.Errorf("voice = %q, want %q", gotVoice, DefaultJudgeVoice)
+	}
+	if gotLang != "fr-FR" {
+		t.Errorf("languageCode = %q, want fr-FR", gotLang)
+	}
+	if gotText != judgeTTSStyleTag+"Bravo !" {
+		t.Errorf("TTS prompt text = %q, want %q", gotText, judgeTTSStyleTag+"Bravo !")
+	}
+	mu.Unlock()
+
+	// 2. Second identical request hits in-memory cache (no second Gemini API call).
+	resp2, err := http.Post(ts.URL+"/tts", "application/json", strings.NewReader(`{"lang":"fr","text":"Bravo !"}`))
+	if err != nil {
+		t.Fatalf("second POST /tts: %v", err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK || !bytes.Equal(body2, fakeAudio) {
+		t.Fatalf("cached response mismatch: status=%d body=%q", resp2.StatusCode, string(body2))
+	}
+	mu.Lock()
+	calls := apiCalls
+	mu.Unlock()
+	if calls != 1 {
+		t.Errorf("Gemini TTS API calls = %d, want 1 (second request should hit cache)", calls)
+	}
+
+	// 3. Method / input validation.
+	getResp, err := http.Get(ts.URL + "/tts")
+	if err != nil {
+		t.Fatalf("GET /tts: %v", err)
+	}
+	getResp.Body.Close()
+	if getResp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("GET /tts status = %d, want 405", getResp.StatusCode)
+	}
+
+	emptyResp, err := http.Post(ts.URL+"/tts", "application/json", strings.NewReader(`{"lang":"fr","text":"   "}`))
+	if err != nil {
+		t.Fatalf("empty POST /tts: %v", err)
+	}
+	emptyResp.Body.Close()
+	if emptyResp.StatusCode != http.StatusBadRequest {
+		t.Errorf("empty POST /tts status = %d, want 400", emptyResp.StatusCode)
+	}
+}

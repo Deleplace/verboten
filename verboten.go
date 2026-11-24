@@ -3,6 +3,7 @@ package verboten
 import (
 	"context"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -70,8 +71,14 @@ type VerbotenGameServer struct {
 	Logger           *slog.Logger
 	Verbose          bool
 	LiveModel        string
+	TTSModel         string
+	JudgeVoice       string
 	RecordingsDir    string
 	sameRootProbFunc func(ctx context.Context, lang, spokenWord, forbiddenWord string) (float64, error)
+	judgeTTSFunc     func(ctx context.Context, lang, text string) ([]byte, string, error)
+
+	ttsCacheMu sync.RWMutex
+	ttsCache   map[string]cachedTTSAudio
 }
 
 func (vg *VerbotenGameServer) logger() *slog.Logger {
@@ -86,9 +93,19 @@ func NewServer(genaiClient *genai.Client) *VerbotenGameServer {
 	if liveModel == "" {
 		liveModel = DefaultLiveModel
 	}
+	ttsModel := strings.TrimSpace(os.Getenv("VERBOTEN_TTS_MODEL"))
+	if ttsModel == "" {
+		ttsModel = DefaultTTSModel
+	}
+	judgeVoice := strings.TrimSpace(os.Getenv("VERBOTEN_JUDGE_VOICE"))
+	if judgeVoice == "" {
+		judgeVoice = DefaultJudgeVoice
+	}
 	return &VerbotenGameServer{
 		genaiClient:   genaiClient,
 		LiveModel:     liveModel,
+		TTSModel:      ttsModel,
+		JudgeVoice:    judgeVoice,
 		RecordingsDir: DefaultRecordingsDirForEnv(),
 	}
 }
@@ -171,6 +188,7 @@ func (vg *VerbotenGameServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", vg.serveGame)
 	mux.HandleFunc("/live/", vg.liveGame)
+	mux.HandleFunc("/tts", vg.serveTTS)
 	mux.HandleFunc("/words.json", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFileFS(w, r, assetsFS, "words.json")
 	})
@@ -227,6 +245,9 @@ type judgeVerdict struct {
 	ForbiddenWord string `json:"forbiddenWord,omitempty"`
 	SpokenWord    string `json:"spokenWord,omitempty"`
 	Reason        string `json:"reason,omitempty"`
+	Message       string `json:"message,omitempty"`
+	Audio         string `json:"audio,omitempty"`
+	AudioMimeType string `json:"audioMimeType,omitempty"`
 }
 
 func judgeSystemInstruction(langName, languageCode, targetWord string, otherForbiddenWords []string) string {
@@ -623,22 +644,62 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 
 						// When the Judge detects a "too close" (resembling) word — or any non-translation
 						// call where the spoken word is not an exact token match for the forbidden word —
-						// double-check with Gemini Decision 1 whether they share the same root (threshold >= 75%).
-						var decisionProb *float64
-						isExactMatch := isExactForbiddenMatch(spokenWord, forbiddenWord)
+						// run Call A (Gemini Decision 1 same-root check, threshold >= 75%) and Call B
+						// (Gemini TTS for the Judge's loss announcement) concurrently.
+						// Once A and B complete, interrupt the game with the TTS voice if A confirmed a loss.
+						var (
+							decisionProb  *float64
+							ttsAudio      []byte
+							ttsMimeType   string
+							lossMessage   string
+							isExactMatch  = isExactForbiddenMatch(spokenWord, forbiddenWord)
+							needsDecision = !isExactMatch && reason != "translation" && spokenWord != "" && forbiddenWord != ""
+						)
 						if isExactMatch {
 							reason = "exact"
-						} else if reason != "translation" && spokenWord != "" && forbiddenWord != "" {
+						}
+
+						if needsDecision {
+							lossMessage = formatJudgeLossText(lang, spokenWord, forbiddenWord, "resembling")
+
+							type decisionResult struct {
+								prob float64
+								err  error
+							}
+							type ttsResult struct {
+								audio    []byte
+								mimeType string
+								err      error
+							}
+							decisionCh := make(chan decisionResult, 1)
+							ttsCh := make(chan ttsResult, 1)
+
 							checkCtx, checkCancel := context.WithTimeout(ctx, 5*time.Second)
-							prob, err := vg.sameRootProbability(checkCtx, lang, spokenWord, forbiddenWord)
-							checkCancel()
-							if err != nil {
+							ttsCtx, ttsCancel := context.WithTimeout(ctx, judgeTTSTimeout)
+
+							// Call A: Decision 1 API
+							go func() {
+								defer checkCancel()
+								prob, err := vg.sameRootProbability(checkCtx, lang, spokenWord, forbiddenWord)
+								decisionCh <- decisionResult{prob: prob, err: err}
+							}()
+
+							// Call B (concurrent with A): Gemini TTS for the Judge verdict voice
+							go func() {
+								defer ttsCancel()
+								audio, mimeType, err := vg.synthesizeJudgeSpeech(ttsCtx, lang, lossMessage)
+								ttsCh <- ttsResult{audio: audio, mimeType: mimeType, err: err}
+							}()
+
+							decRes := <-decisionCh
+							if decRes.err != nil {
 								gameLog.Error("decision 1 check failed",
 									"spoken", spokenWord,
 									"forbidden", forbiddenWord,
-									"err", err,
+									"err", decRes.err,
 								)
 							} else {
+								prob := decRes.prob
 								decisionProb = &prob
 								proximityPct := int(math.Round(prob * 100))
 								gameLog.Info(
@@ -649,6 +710,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 									"probability", prob,
 								)
 								if prob < sameRootProbabilityThreshold {
+									ttsCancel()
 									ignoreAndKeepListening(
 										fmt.Sprintf("Ignored: %q is not too close to %q (same-root probability %.0f%% < 75%%). Keep listening.", spokenWord, forbiddenWord, prob*100),
 										decisionProb,
@@ -657,26 +719,54 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 								}
 								reason = "resembling"
 							}
+
+							if !gameOver.CompareAndSwap(false, true) {
+								ttsCancel()
+								return
+							}
+							ttsRes := <-ttsCh
+							if ttsRes.err != nil {
+								gameLog.Warn("judge TTS failed", "reason", reason, "err", ttsRes.err)
+							} else {
+								ttsAudio = ttsRes.audio
+								ttsMimeType = ttsRes.mimeType
+							}
+						} else {
+							if !gameOver.CompareAndSwap(false, true) {
+								return
+							}
+							lossMessage = formatJudgeLossText(lang, spokenWord, forbiddenWord, reason)
+							ttsCtx, ttsCancel := context.WithTimeout(ctx, judgeTTSTimeout)
+							audio, mimeType, err := vg.synthesizeJudgeSpeech(ttsCtx, lang, lossMessage)
+							ttsCancel()
+							if err != nil {
+								gameLog.Warn("judge TTS failed", "reason", reason, "err", err)
+							} else {
+								ttsAudio = audio
+								ttsMimeType = mimeType
+							}
 						}
 
-						if !gameOver.CompareAndSwap(false, true) {
-							return
-						}
 						recorder.RecordJudgeEvent(fc.Name, false, spokenWord, forbiddenWord, reason, decisionProb)
 						recorder.SetOutcome(OutcomeLost)
 						gameLog.Info("judge declared loss",
 							"reason", reason,
 							"spoken", spokenWord,
 							"forbidden", forbiddenWord,
+							"tts_bytes", len(ttsAudio),
 						)
-						verdictBytes, err := json.Marshal(judgeMessage{
-							Judge: &judgeVerdict{
-								Lost:          true,
-								ForbiddenWord: forbiddenWord,
-								SpokenWord:    spokenWord,
-								Reason:        reason,
-							},
-						})
+						verdict := &judgeVerdict{
+							Lost:          true,
+							ForbiddenWord: forbiddenWord,
+							SpokenWord:    spokenWord,
+							Reason:        reason,
+							Message:       lossMessage,
+						}
+						if len(ttsAudio) > 0 {
+							verdict.Audio = base64.StdEncoding.EncodeToString(ttsAudio)
+							verdict.AudioMimeType = ttsMimeType
+						}
+						verdictBytes, err := json.Marshal(judgeMessage{Judge: verdict})
 						if err != nil {
 							gameLog.Error("marshal judge verdict failed", "err", err)
 							return

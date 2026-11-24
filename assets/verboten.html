@@ -121,8 +121,11 @@
 
             var playbackContext = null;
             var playbackGain = null;
+            var refereeGain = null;
             var nextPlaybackTime = 0;
             var activeAudioSources = [];
+            var activeRefereeSource = null;
+            var activeRefereeAnim = null;
 
             function encodeAudio(audioChunks, sampleRate, bitDepth, numChannels) {
                 var audioData = mergeUint8Array(audioChunks);
@@ -228,7 +231,12 @@
                     data = JSON.parse(evt.data);
                     if (data.judge && data.judge.lost) {
                         console.log('Judge declared loss:', data.judge);
-                        endGame(false, formatJudgeLossMessage(data.judge.spokenWord, data.judge.forbiddenWord, data.judge.reason));
+                        const lossMessage = data.judge.message || formatJudgeLossMessage(data.judge.spokenWord, data.judge.forbiddenWord, data.judge.reason);
+                        const judgeAudio = data.judge.audio ? {
+                            data: data.judge.audio,
+                            mimeType: data.judge.audioMimeType || 'audio/wav'
+                        } : null;
+                        endGame(false, lossMessage, judgeAudio);
                         return;
                     }
                     if (!data.serverContent) return;
@@ -241,11 +249,15 @@
                     if (data.serverContent.outputTranscription && lastModelText) {
                         console.log('Model says: ', lastModelText);
                         modelSpeech += lastModelText;
-                        if (modelSpeech.toLowerCase().includes(targetWord.word.toLowerCase())) {
+                        if (!winTimeout && modelSpeech.toLowerCase().includes(targetWord.word.toLowerCase())) {
                             // Give 1200ms for the contestant to actually pronounce the word, then
-                            // proclaim victory.
-                            winTimeout = setTimeout(() => {
-                                endGame(true, phrases[currentLanguage].modelGuessedWord(targetWord.word));
+                            // proclaim victory (prefetching the Gemini TTS win phrase in parallel).
+                            const winClipPromise = fetchRefereeTTS(phrases[currentLanguage].goodJob, currentLanguage);
+                            winTimeout = setTimeout(async () => {
+                                const winClip = await winClipPromise;
+                                if (!gameEnded) {
+                                    endGame(true, phrases[currentLanguage].modelGuessedWord(targetWord.word), winClip);
+                                }
                             }, 1200);
                             return;
                         } else {
@@ -384,6 +396,9 @@
                     playbackGain = playbackContext.createGain();
                     playbackGain.gain.value = 0.55; // Moderate gain to reduce speaker-to-mic AEC ducking
                     playbackGain.connect(playbackContext.destination);
+                    refereeGain = playbackContext.createGain();
+                    refereeGain.gain.value = 1.0;
+                    refereeGain.connect(playbackContext.destination);
                     nextPlaybackTime = 0;
                 }
                 if (playbackContext.state === 'suspended') {
@@ -430,6 +445,135 @@
                 }
                 activeAudioSources = [];
                 nextPlaybackTime = 0;
+            }
+
+            function stopRefereePlayback() {
+                if (activeRefereeSource) {
+                    const prev = activeRefereeSource;
+                    activeRefereeSource = null;
+                    prev.onended = null;
+                    try {
+                        prev.stop();
+                    } catch (e) {}
+                }
+                if (activeRefereeAnim) {
+                    clearInterval(activeRefereeAnim);
+                    activeRefereeAnim = null;
+                }
+                if (window.speechSynthesis) {
+                    try {
+                        window.speechSynthesis.cancel();
+                    } catch (e) {}
+                }
+                const refereeImg = document.getElementById('referee-img');
+                if (refereeImg) {
+                    refereeImg.src = '/forbiddenwords/referee.png';
+                }
+            }
+
+            async function decodeRefereeAudioBuffer(ctx, uint8Bytes, mimeType) {
+                const lowerMime = (mimeType || '').toLowerCase();
+                if (lowerMime.startsWith('audio/pcm') || lowerMime.startsWith('audio/l16')) {
+                    const sampleRateHz = parseSampleRate(mimeType, outputSampleRate);
+                    const sampleCount = Math.floor(uint8Bytes.byteLength / 2);
+                    const view = new DataView(uint8Bytes.buffer, uint8Bytes.byteOffset, sampleCount * 2);
+                    const floatSamples = new Float32Array(sampleCount);
+                    for (let i = 0; i < sampleCount; i++) {
+                        floatSamples[i] = view.getInt16(i * 2, true) / 32768;
+                    }
+                    const audioBuffer = ctx.createBuffer(1, sampleCount, sampleRateHz);
+                    audioBuffer.getChannelData(0).set(floatSamples);
+                    return audioBuffer;
+                }
+                const copy = uint8Bytes.buffer.slice(uint8Bytes.byteOffset, uint8Bytes.byteOffset + uint8Bytes.byteLength);
+                return await ctx.decodeAudioData(copy);
+            }
+
+            function trimAudioBufferSilence(ctx, buffer) {
+                const data = buffer.getChannelData(0);
+                const threshold = 0.01;
+                let start = 0;
+                while (start < data.length && Math.abs(data[start]) < threshold) {
+                    start++;
+                }
+                if (start >= data.length) {
+                    return buffer;
+                }
+                let end = data.length - 1;
+                while (end > start && Math.abs(data[end]) < threshold) {
+                    end--;
+                }
+                const leadPad = Math.floor(buffer.sampleRate * 0.025);
+                const tailPad = Math.floor(buffer.sampleRate * 0.045);
+                start = Math.max(0, start - leadPad);
+                end = Math.min(data.length, end + 1 + tailPad);
+                const trimmedLen = end - start;
+                if (trimmedLen <= 0 || trimmedLen >= data.length) {
+                    return buffer;
+                }
+                const trimmed = ctx.createBuffer(buffer.numberOfChannels, trimmedLen, buffer.sampleRate);
+                for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+                    trimmed.getChannelData(ch).set(buffer.getChannelData(ch).subarray(start, end));
+                }
+                return trimmed;
+            }
+
+            async function playRefereeAudioBytes(uint8Bytes, mimeType, waving) {
+                const ctx = ensurePlaybackContext();
+                if (ctx.state === 'suspended') {
+                    await ctx.resume().catch(() => {});
+                }
+                const decodedBuffer = await decodeRefereeAudioBuffer(ctx, uint8Bytes, mimeType);
+                const audioBuffer = trimAudioBufferSilence(ctx, decodedBuffer);
+                stopRefereePlayback();
+
+                const anim = refereeSpeaking(waving);
+                activeRefereeAnim = anim;
+
+                return new Promise((resolve) => {
+                    const src = ctx.createBufferSource();
+                    src.buffer = audioBuffer;
+                    src.connect(refereeGain || ctx.destination);
+                    activeRefereeSource = src;
+                    src.onended = () => {
+                        if (activeRefereeSource === src) {
+                            activeRefereeSource = null;
+                        }
+                        if (activeRefereeAnim === anim) {
+                            clearInterval(anim);
+                            activeRefereeAnim = null;
+                        }
+                        const refereeImg = document.getElementById('referee-img');
+                        if (refereeImg) {
+                            refereeImg.src = waving ? '/forbiddenwords/referee_waves.png' : '/forbiddenwords/referee.png';
+                        }
+                        resolve();
+                    };
+                    src.start(0);
+                });
+            }
+
+            async function fetchRefereeTTS(text, lang) {
+                try {
+                    const resp = await fetch('/tts', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ lang: lang || currentLanguage, text: text })
+                    });
+                    if (!resp.ok) {
+                        console.warn('Gemini TTS request failed:', resp.status);
+                        return null;
+                    }
+                    const mimeType = resp.headers.get('Content-Type') || 'audio/wav';
+                    const buf = await resp.arrayBuffer();
+                    if (!buf || buf.byteLength === 0) {
+                        return null;
+                    }
+                    return { bytes: new Uint8Array(buf), mimeType };
+                } catch (err) {
+                    console.warn('Gemini TTS fetch error:', err);
+                    return null;
+                }
             }
 
             function refereeSpeaking(waving) {
@@ -561,9 +705,9 @@
                 gameOver: "Game Over! 😥",
                 playAgain: "Play Again",
                 micRequired: "Microphone access is required to play. Please allow it and try again.",
-                youSaidForbidden: (word) => `You said the proscribed word: "${word}"`,
-                youSaidTooClose: (spoken, forbidden) => `You said "${spoken}", which is too close to the proscribed word "${forbidden}"`,
-                youSaidTranslation: (spoken, forbidden) => `You said "${spoken}", which is a translation of the target word "${forbidden}"`,
+                youSaidForbidden: (word) => `You said the forbidden word "${word}".`,
+                youSaidTooClose: (spoken, forbidden) => `You said the word "${spoken}", which is too close to the forbidden word "${forbidden}".`,
+                youSaidTranslation: (spoken, forbidden) => `You said the word "${spoken}", which is a translation of the target word "${forbidden}".`,
                 modelGuessedWord: (word) => `The model guessed the word: "${word}"`,
                 goodJob: "Good job!",
                 microphoneUsage: "This game uses your microphone.",
@@ -583,9 +727,9 @@
                 gameOver: "Partie terminée ! 😥",
                 playAgain: "Rejouer",
                 micRequired: "L'accès au microphone est requis pour jouer. Veuillez l'autoriser et réessayer.",
-                youSaidForbidden: (word) => `Vous avez dit le mot prohibé: "${word}"`,
-                youSaidTooClose: (spoken, forbidden) => `Vous avez dit "${spoken}", qui est trop proche du mot prohibé "${forbidden}"`,
-                youSaidTranslation: (spoken, forbidden) => `Vous avez dit "${spoken}", qui est une traduction du mot à deviner "${forbidden}"`,
+                youSaidForbidden: (word) => `Vous avez dit le mot interdit « ${word} ».`,
+                youSaidTooClose: (spoken, forbidden) => `Vous avez dit le mot « ${spoken} », qui est trop proche du mot interdit « ${forbidden} ».`,
+                youSaidTranslation: (spoken, forbidden) => `Vous avez dit le mot « ${spoken} », qui est une traduction du mot à deviner « ${forbidden} ».`,
                 modelGuessedWord: (word) => `Le modèle a deviné le mot: "${word}"`,
                 goodJob: "Bravo !",
                 microphoneUsage: "Ce jeu utilise votre microphone.",
@@ -701,35 +845,73 @@
             window.speechSynthesis.onvoiceschanged = loadVoices;
         }
 
-        function refereeSpeak(text, waving, callback) {
-            console.log(text);
-            const utterance = new SpeechSynthesisUtterance(text);
-            utterance.lang = currentLanguage === 'fr' ? 'fr-FR' : 'en-US';
-            utterance.rate = 1.2;
+        function browserSpeechFallback(text, waving) {
+            return new Promise((resolve) => {
+                if (!window.speechSynthesis) {
+                    resolve();
+                    return;
+                }
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.lang = currentLanguage === 'fr' ? 'fr-FR' : 'en-US';
+                utterance.rate = 1.2;
 
-            const voice = voices[currentLanguage];
-            if (voice) {
-                utterance.voice = voice;
-            } else {
-                utterance.pitch = 0.3;
-            }
-            
-            const animationInterval = refereeSpeaking(waving);
+                const voice = voices[currentLanguage];
+                if (voice) {
+                    utterance.voice = voice;
+                } else {
+                    utterance.pitch = 0.3;
+                }
 
-            utterance.onend = () => {
-                if (animationInterval) {
-                    clearInterval(animationInterval);
+                const animationInterval = refereeSpeaking(waving);
+                activeRefereeAnim = animationInterval;
+
+                const finish = () => {
+                    if (activeRefereeAnim === animationInterval) {
+                        clearInterval(animationInterval);
+                        activeRefereeAnim = null;
+                    }
                     const refereeImg = document.getElementById('referee-img');
                     if (refereeImg) {
-                        refereeImg.src = '/forbiddenwords/referee.png';
+                        refereeImg.src = waving ? '/forbiddenwords/referee_waves.png' : '/forbiddenwords/referee.png';
                     }
-                }
-                if (callback) {
-                    callback();
-                }
-            };
+                    resolve();
+                };
+                utterance.onend = finish;
+                utterance.onerror = finish;
+                speechSynthesis.speak(utterance);
+            });
+        }
 
-            speechSynthesis.speak(utterance);
+        async function refereeSpeak(text, waving, callback, prebuiltAudio = null) {
+            console.log(text);
+            let played = false;
+            try {
+                let clip = null;
+                if (prebuiltAudio && prebuiltAudio.data) {
+                    clip = {
+                        bytes: b64ToUint8Array(prebuiltAudio.data),
+                        mimeType: prebuiltAudio.mimeType || 'audio/wav'
+                    };
+                } else if (prebuiltAudio && prebuiltAudio.bytes) {
+                    clip = prebuiltAudio;
+                } else {
+                    clip = await fetchRefereeTTS(text, currentLanguage);
+                }
+
+                if (clip && clip.bytes && clip.bytes.byteLength > 0) {
+                    await playRefereeAudioBytes(clip.bytes, clip.mimeType, waving);
+                    played = true;
+                }
+            } catch (err) {
+                console.warn('Gemini TTS playback failed, falling back to browser speech:', err);
+            }
+
+            if (!played) {
+                await browserSpeechFallback(text, waving);
+            }
+            if (callback) {
+                callback();
+            }
         }
 
 
@@ -793,42 +975,49 @@
             `;
 
             recordStart();
-            refereeSpeak(phrases[language].describeWord(targetWord.word), false, () => {
-                refereeSpeak(phrases[language].forbiddenWordsAre, false, () => {
-                    // After saying the main word, show the other proscribed words
-                    gameData.forbidden.forEach((word, index) => {
-                        setTimeout(() => {
-                            const wordEl = document.createElement('div');
-                            wordEl.className = 'bg-slate-700 text-red-400 font-semibold py-2 px-4 rounded-lg animate-grow';
-                            wordEl.textContent = word;
-                            forbiddenWordsList.appendChild(wordEl);
-                            
-                            let callback = null;
-                            if (index === gameData.forbidden.length - 1) {
-                                // This is the last proscribed word.
-                                callback = () => {
-                                    const contestantImg = document.getElementById('contestant2-img');
-                                    if (contestantImg) {
-                                        contestantImg.classList.remove('hidden');
-                                    }
-                                    // Brief tail delay so the referee's final syllable doesn't leak into the mic stream.
-                                    preludeTimer = setTimeout(() => {
-                                        preludeFinished = true;
-                                        preludeTimer = null;
-                                    }, 250);
-                                };
-                            }
-                            refereeSpeak(word, false, callback);
-                        }, index * 800);
-                    });
+            // Prefetch all prelude clips concurrently from Gemini TTS so playback flows smoothly.
+            const describeText = phrases[language].describeWord(targetWord.word);
+            const forbiddenIntroText = phrases[language].forbiddenWordsAre;
+            const describePromise = fetchRefereeTTS(describeText, language);
+            const introPromise = fetchRefereeTTS(forbiddenIntroText, language);
+            const wordPromises = gameData.forbidden.map((word) => fetchRefereeTTS(word, language));
 
-                    openWs(language);
-                    setTimeout(() => {
-                        // Start Gemini listening to the human player
-                        // recordStart();
-                    });
-                });
-            });
+            (async () => {
+                const describeClip = await describePromise;
+                if (gameEnded) return;
+                await refereeSpeak(describeText, false, null, describeClip);
+                if (gameEnded) return;
+
+                openWs(language);
+                const introClip = await introPromise;
+                if (gameEnded) return;
+                await refereeSpeak(forbiddenIntroText, false, null, introClip);
+                if (gameEnded) return;
+
+                for (let i = 0; i < gameData.forbidden.length; i++) {
+                    if (gameEnded) return;
+                    const word = gameData.forbidden[i];
+                    const wordEl = document.createElement('div');
+                    wordEl.className = 'bg-slate-700 text-red-400 font-semibold py-2 px-4 rounded-lg animate-grow';
+                    wordEl.textContent = word;
+                    forbiddenWordsList.appendChild(wordEl);
+
+                    const wordClip = await wordPromises[i];
+                    if (gameEnded) return;
+                    await refereeSpeak(word, false, null, wordClip);
+                }
+
+                if (gameEnded) return;
+                const contestantImg = document.getElementById('contestant2-img');
+                if (contestantImg) {
+                    contestantImg.classList.remove('hidden');
+                }
+                // Brief tail delay so the referee's final syllable doesn't leak into the mic stream.
+                preludeTimer = setTimeout(() => {
+                    preludeFinished = true;
+                    preludeTimer = null;
+                }, 250);
+            })();
         }
 
         function startTimerAndRecognition() {
@@ -851,7 +1040,7 @@
             }, 1000);
         }
 
-        function endGame(isWin, message) {
+        function endGame(isWin, message, prebuiltAudio = null) {
             if (gameEnded) {
                 return;
             }
@@ -868,6 +1057,7 @@
             if (!isWin) {
                 stopPlayback();
             }
+            stopRefereePlayback();
             if (ws) {
                 if (ws.readyState === WebSocket.OPEN) {
                     try {
@@ -898,10 +1088,10 @@
 
             if (isWin) {
                 // Won
-                refereeSpeak(phrases[currentLanguage].goodJob, true);
+                refereeSpeak(phrases[currentLanguage].goodJob, true, null, prebuiltAudio);
             } else {
-                // Lost
-                refereeSpeak(message, true);
+                // Lost: play the pre-generated Gemini TTS verdict audio immediately if available
+                refereeSpeak(message, true, null, prebuiltAudio);
             }
 
             const languageButtons = document.getElementById('language-buttons');
