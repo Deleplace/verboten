@@ -14,7 +14,6 @@ import (
 const (
 	DefaultTTSModel   = "gemini-3.8-flash-lite-tts"
 	DefaultJudgeVoice = "Charon" // Deep masculine voice, distinct from the Guesser's "Puck" voice.
-	judgeTTSStyleTag  = "[slightly fast] "
 
 	judgeTTSTimeout       = 8 * time.Second
 	judgeTTSCacheMaxItems = 256
@@ -142,7 +141,7 @@ func (vg *VerbotenGameServer) synthesizeJudgeSpeech(ctx context.Context, lang, t
 		return nil, "", fmt.Errorf("genai models client is not initialized")
 	}
 
-	resp, err := vg.genaiClient.Models.GenerateContent(ctx, vg.ttsModel(), genai.Text(judgeTTSStyleTag+trimmed), &genai.GenerateContentConfig{
+	resp, err := vg.genaiClient.Models.GenerateContent(ctx, vg.ttsModel(), genai.Text(trimmed), &genai.GenerateContentConfig{
 		ResponseModalities: []string{"AUDIO"},
 		SpeechConfig: &genai.SpeechConfig{
 			LanguageCode: languageCodeForLang(lang),

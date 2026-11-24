@@ -126,6 +126,9 @@
             var activeAudioSources = [];
             var activeRefereeSource = null;
             var activeRefereeAnim = null;
+            var refereeAudioEl = null;
+            var activeRefereeBlobUrl = null;
+            var refereePlaybackRate = 1.18;
 
             function encodeAudio(audioChunks, sampleRate, bitDepth, numChannels) {
                 var audioData = mergeUint8Array(audioChunks);
@@ -447,7 +450,60 @@
                 nextPlaybackTime = 0;
             }
 
+            function ensureRefereeAudioElement() {
+                if (!refereeAudioEl) {
+                    refereeAudioEl = new Audio();
+                    refereeAudioEl.preload = 'auto';
+                }
+                refereeAudioEl.preservesPitch = true;
+                refereeAudioEl.mozPreservesPitch = true;
+                refereeAudioEl.webkitPreservesPitch = true;
+                refereeAudioEl.defaultPlaybackRate = refereePlaybackRate;
+                refereeAudioEl.playbackRate = refereePlaybackRate;
+                return refereeAudioEl;
+            }
+
+            function unlockRefereeAudio() {
+                const el = ensureRefereeAudioElement();
+                try {
+                    const silentBlob = encodeAudio([new Uint8Array(64)], outputSampleRate, 16, 1);
+                    const url = URL.createObjectURL(silentBlob);
+                    el.src = url;
+                    const p = el.play();
+                    if (p && typeof p.then === 'function') {
+                        p.then(() => {
+                            if (el.src === url) {
+                                el.pause();
+                            }
+                            URL.revokeObjectURL(url);
+                        }).catch(() => {
+                            URL.revokeObjectURL(url);
+                        });
+                    } else {
+                        URL.revokeObjectURL(url);
+                    }
+                } catch (e) {}
+            }
+
+            function audioBufferToWavBlob(audioBuffer) {
+                const channelData = audioBuffer.getChannelData(0);
+                const int16 = convertFloat32ToInt16(channelData);
+                return encodeAudio([new Uint8Array(int16.buffer)], audioBuffer.sampleRate, 16, 1);
+            }
+
             function stopRefereePlayback() {
+                if (refereeAudioEl) {
+                    refereeAudioEl.onended = null;
+                    refereeAudioEl.onerror = null;
+                    try {
+                        refereeAudioEl.pause();
+                        refereeAudioEl.currentTime = 0;
+                    } catch (e) {}
+                }
+                if (activeRefereeBlobUrl) {
+                    URL.revokeObjectURL(activeRefereeBlobUrl);
+                    activeRefereeBlobUrl = null;
+                }
                 if (activeRefereeSource) {
                     const prev = activeRefereeSource;
                     activeRefereeSource = null;
@@ -530,6 +586,63 @@
                 const anim = refereeSpeaking(waving);
                 activeRefereeAnim = anim;
 
+                const finishAnim = () => {
+                    if (activeRefereeAnim === anim) {
+                        clearInterval(anim);
+                        activeRefereeAnim = null;
+                    }
+                    const refereeImg = document.getElementById('referee-img');
+                    if (refereeImg) {
+                        refereeImg.src = waving ? '/forbiddenwords/referee_waves.png' : '/forbiddenwords/referee.png';
+                    }
+                };
+
+                // Prefer HTMLAudioElement with preservesPitch=true for natural speedup without pitch shift.
+                try {
+                    const el = ensureRefereeAudioElement();
+                    const wavBlob = audioBufferToWavBlob(audioBuffer);
+                    const blobUrl = URL.createObjectURL(wavBlob);
+                    activeRefereeBlobUrl = blobUrl;
+                    el.src = blobUrl;
+                    el.preservesPitch = true;
+                    el.mozPreservesPitch = true;
+                    el.webkitPreservesPitch = true;
+                    el.playbackRate = refereePlaybackRate;
+
+                    await new Promise((resolve, reject) => {
+                        const cleanup = () => {
+                            el.onended = null;
+                            el.onerror = null;
+                            if (activeRefereeBlobUrl === blobUrl) {
+                                URL.revokeObjectURL(blobUrl);
+                                activeRefereeBlobUrl = null;
+                            }
+                            finishAnim();
+                        };
+                        el.onended = () => {
+                            cleanup();
+                            resolve();
+                        };
+                        el.onerror = (err) => {
+                            cleanup();
+                            reject(err);
+                        };
+                        const playPromise = el.play();
+                        if (playPromise && typeof playPromise.catch === 'function') {
+                            playPromise.catch((err) => {
+                                cleanup();
+                                reject(err);
+                            });
+                        }
+                    });
+                    return;
+                } catch (err) {
+                    console.warn('HTMLAudioElement referee playback fallback to AudioContext:', err);
+                }
+
+                // Fallback to unlocked Web Audio AudioContext if HTMLAudioElement playback is blocked.
+                const fallbackAnim = refereeSpeaking(waving);
+                activeRefereeAnim = fallbackAnim;
                 return new Promise((resolve) => {
                     const src = ctx.createBufferSource();
                     src.buffer = audioBuffer;
@@ -539,8 +652,8 @@
                         if (activeRefereeSource === src) {
                             activeRefereeSource = null;
                         }
-                        if (activeRefereeAnim === anim) {
-                            clearInterval(anim);
+                        if (activeRefereeAnim === fallbackAnim) {
+                            clearInterval(fallbackAnim);
                             activeRefereeAnim = null;
                         }
                         const refereeImg = document.getElementById('referee-img');
@@ -1117,6 +1230,7 @@
 
         function handleStartGameClick(language) {
             ensurePlaybackContext();
+            unlockRefereeAudio();
             // Check for microphone permissions first
             navigator.mediaDevices.getUserMedia({ audio: getAudioConstraints() })
                 .then(stream => {

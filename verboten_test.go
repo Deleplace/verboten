@@ -2193,8 +2193,8 @@ func TestServeTTSEndpointAndCache(t *testing.T) {
 	if gotLang != "fr-FR" {
 		t.Errorf("languageCode = %q, want fr-FR", gotLang)
 	}
-	if gotText != judgeTTSStyleTag+"Bravo !" {
-		t.Errorf("TTS prompt text = %q, want %q", gotText, judgeTTSStyleTag+"Bravo !")
+	if gotText != "Bravo !" {
+		t.Errorf("TTS prompt text = %q, want %q", gotText, "Bravo !")
 	}
 	mu.Unlock()
 
