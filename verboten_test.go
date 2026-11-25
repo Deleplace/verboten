@@ -20,6 +20,30 @@ import (
 	"google.golang.org/genai"
 )
 
+func readJudgeLossVerdict(t *testing.T, conn *websocket.Conn, timeout time.Duration) *judgeVerdict {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	gotPending := false
+	for {
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			t.Fatalf("read judge verdict: %v (gotPending=%v)", err, gotPending)
+		}
+		var jm judgeMessage
+		if err := json.Unmarshal(data, &jm); err != nil {
+			t.Fatalf("unmarshal judge verdict: %v (%s)", err, data)
+		}
+		if jm.Judge != nil && jm.Judge.Pending {
+			gotPending = true
+			continue
+		}
+		if !gotPending {
+			t.Errorf("expected judge pending signal before final loss verdict")
+		}
+		return jm.Judge
+	}
+}
+
 func TestDoubleLivestreamJudgeAndGuesser(t *testing.T) {
 	type capturedSession struct {
 		isJudge      bool
@@ -231,18 +255,9 @@ func TestDoubleLivestreamJudgeAndGuesser(t *testing.T) {
 		t.Fatalf("judge write toolCall: %v", err)
 	}
 
-	_ = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, gotJudgeBytes, err := browserConn.ReadMessage()
-	if err != nil {
-		t.Fatalf("browser read judge verdict: %v", err)
-	}
-
-	var msg judgeMessage
-	if err := json.Unmarshal(gotJudgeBytes, &msg); err != nil {
-		t.Fatalf("unmarshal judge verdict: %v (%s)", err, gotJudgeBytes)
-	}
-	if msg.Judge == nil || !msg.Judge.Lost || msg.Judge.ForbiddenWord != "lemon" || msg.Judge.SpokenWord != "citron" || msg.Judge.Reason != "translation" {
-		t.Fatalf("unexpected judge verdict: %+v", msg.Judge)
+	verdict := readJudgeLossVerdict(t, browserConn, 2*time.Second)
+	if verdict == nil || !verdict.Lost || verdict.ForbiddenWord != "lemon" || verdict.SpokenWord != "citron" || verdict.Reason != "translation" {
+		t.Fatalf("unexpected judge verdict: %+v", verdict)
 	}
 
 	// Close browser connection so liveGame finishes and finalizes the game recording folder.
@@ -656,17 +671,9 @@ func TestDecisionSameRootFilteringInLiveGame(t *testing.T) {
 	if err := judgeSess.conn.WriteMessage(websocket.TextMessage, []byte(call3)); err != nil {
 		t.Fatalf("write call3: %v", err)
 	}
-	_ = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, gotBytes, err := browserConn.ReadMessage()
-	if err != nil {
-		t.Fatalf("read browser verdict: %v", err)
-	}
-	var verdict judgeMessage
-	if err := json.Unmarshal(gotBytes, &verdict); err != nil {
-		t.Fatalf("unmarshal verdict: %v", err)
-	}
-	if verdict.Judge == nil || !verdict.Judge.Lost || verdict.Judge.SpokenWord != "porte" || verdict.Judge.ForbiddenWord != "Porter" {
-		t.Fatalf("unexpected verdict: %+v", verdict.Judge)
+	verdict := readJudgeLossVerdict(t, browserConn, 2*time.Second)
+	if verdict == nil || !verdict.Lost || verdict.SpokenWord != "porte" || verdict.ForbiddenWord != "Porter" {
+		t.Fatalf("unexpected verdict: %+v", verdict)
 	}
 
 	_ = browserConn.Close()
@@ -904,23 +911,15 @@ func TestExactMatchWithArticleSkipsDecision1InLiveGame(t *testing.T) {
 				t.Fatalf("write toolCall: %v", err)
 			}
 
-			_ = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-			_, gotBytes, err := browserConn.ReadMessage()
-			if err != nil {
-				t.Fatalf("read browser verdict: %v", err)
+			verdict := readJudgeLossVerdict(t, browserConn, 2*time.Second)
+			if verdict == nil || !verdict.Lost {
+				t.Fatalf("expected loss verdict, got: %+v", verdict)
 			}
-			var verdict judgeMessage
-			if err := json.Unmarshal(gotBytes, &verdict); err != nil {
-				t.Fatalf("unmarshal verdict: %v", err)
+			if verdict.Reason != tc.wantReason {
+				t.Errorf("verdict.Reason = %q, want %q", verdict.Reason, tc.wantReason)
 			}
-			if verdict.Judge == nil || !verdict.Judge.Lost {
-				t.Fatalf("expected loss verdict, got: %+v", verdict.Judge)
-			}
-			if verdict.Judge.Reason != tc.wantReason {
-				t.Errorf("verdict.Reason = %q, want %q", verdict.Judge.Reason, tc.wantReason)
-			}
-			if verdict.Judge.ForbiddenWord != tc.forbidden {
-				t.Errorf("verdict.ForbiddenWord = %q, want %q", verdict.Judge.ForbiddenWord, tc.forbidden)
+			if verdict.ForbiddenWord != tc.forbidden {
+				t.Errorf("verdict.ForbiddenWord = %q, want %q", verdict.ForbiddenWord, tc.forbidden)
 			}
 
 			callMu.Lock()
@@ -1135,8 +1134,8 @@ func TestRecordedGameOutcomes(t *testing.T) {
 
 func TestNewGenAIClientForcesGeminiAPIV1Beta(t *testing.T) {
 	t.Setenv("GOOGLE_API_KEY", "test-key")
-	// Even if Vertex env vars are set, Verboten must use BackendGeminiAPI + v1beta
-	// because gemini-3.1-flash-live-preview and gemini-decision-1 require Gemini Developer API.
+	// Even if Vertex env vars are set, NewGenAIClient must use BackendGeminiAPI + v1beta
+	// because gemini-decision-1 (/v1beta/decisions) requires Gemini Developer API.
 	t.Setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
 	t.Setenv("GOOGLE_GENAI_USE_ENTERPRISE", "")
 	t.Setenv("GOOGLE_GENAI_API_VERSION", "")
@@ -1150,6 +1149,326 @@ func TestNewGenAIClientForcesGeminiAPIV1Beta(t *testing.T) {
 	}
 	if got := client.ClientConfig().HTTPOptions.APIVersion; got != "v1beta" {
 		t.Fatalf("APIVersion = %q, want %q", got, "v1beta")
+	}
+}
+
+func TestNewVertexLiveClientConfig(t *testing.T) {
+	t.Run("disabled_when_project_unset", func(t *testing.T) {
+		t.Setenv("GOOGLE_CLOUD_PROJECT", "")
+		t.Setenv("GOOGLE_CLOUD_LOCATION", "")
+		t.Setenv("VERBOTEN_VERTEX_LOCATION", "")
+
+		client, info, err := NewVertexLiveClient(context.Background())
+		if err != nil {
+			t.Fatalf("NewVertexLiveClient: %v", err)
+		}
+		if client != nil {
+			t.Fatalf("expected nil client when GOOGLE_CLOUD_PROJECT is unset, got %+v", client)
+		}
+		if info != (VertexClientInfo{}) {
+			t.Fatalf("expected empty VertexClientInfo, got %+v", info)
+		}
+	})
+
+	t.Run("defaults_to_eu_multiregion_and_ignores_api_key", func(t *testing.T) {
+		// Even with GOOGLE_API_KEY set in env (needed for Decision 1), Vertex Live client
+		// must use project+location (ADC) and resolve to the EU multi-region host — NOT global.
+		t.Setenv("GOOGLE_API_KEY", "should-be-ignored-for-vertex")
+		t.Setenv("GOOGLE_CLOUD_PROJECT", "test-eu-proj")
+		t.Setenv("GOOGLE_CLOUD_LOCATION", "")
+		t.Setenv("VERBOTEN_VERTEX_LOCATION", "")
+
+		proj, loc := VertexLiveConfigForEnv()
+		if proj != "test-eu-proj" || loc != "eu" {
+			t.Fatalf("VertexLiveConfigForEnv() = (%q, %q), want (%q, %q)", proj, loc, "test-eu-proj", "eu")
+		}
+
+		client, info, err := newVertexLiveClient(context.Background(), proj, loc, http.DefaultClient)
+		if err != nil {
+			t.Fatalf("newVertexLiveClient: %v", err)
+		}
+		cc := client.ClientConfig()
+		if cc.Backend != genai.BackendVertexAI {
+			t.Errorf("Backend = %v, want BackendVertexAI", cc.Backend)
+		}
+		if cc.APIKey != "" {
+			t.Errorf("APIKey = %q, want empty (must not use Express global mode)", cc.APIKey)
+		}
+		if info.BaseURL != "https://aiplatform.eu.rep.googleapis.com/" {
+			t.Errorf("BaseURL = %q, want https://aiplatform.eu.rep.googleapis.com/", info.BaseURL)
+		}
+		wantWS := "wss://aiplatform.eu.rep.googleapis.com/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent"
+		if info.LiveWebSocketURL != wantWS {
+			t.Errorf("LiveWebSocketURL = %q, want %q", info.LiveWebSocketURL, wantWS)
+		}
+	})
+
+	t.Run("vertex_location_override", func(t *testing.T) {
+		t.Setenv("GOOGLE_CLOUD_PROJECT", "test-eu-proj")
+		t.Setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+		t.Setenv("VERBOTEN_VERTEX_LOCATION", "europe-west1")
+
+		proj, loc := VertexLiveConfigForEnv()
+		if loc != "europe-west1" {
+			t.Fatalf("loc = %q, want europe-west1", loc)
+		}
+		_, info, err := newVertexLiveClient(context.Background(), proj, loc, http.DefaultClient)
+		if err != nil {
+			t.Fatalf("newVertexLiveClient: %v", err)
+		}
+		if info.BaseURL != "https://europe-west1-aiplatform.googleapis.com/" {
+			t.Errorf("BaseURL = %q, want https://europe-west1-aiplatform.googleapis.com/", info.BaseURL)
+		}
+	})
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestDualClientRoutingLiveAndTTSOnVertexDecisionOnGeminiAPI(t *testing.T) {
+	type capturedSession struct {
+		isJudge  bool
+		setupRaw string
+		conn     *websocket.Conn
+	}
+	var (
+		mu              sync.Mutex
+		vertexWSPaths   []string
+		vertexTTSPaths  []string
+		vertexSessions  []*capturedSession
+		bothVertexUp    = make(chan struct{})
+		geminiDecPaths  []string
+		geminiDecModels []string
+		geminiLiveHits  int
+		geminiTTSHits   int
+	)
+	fakeExactWAV := []byte("RIFF\x24\x00\x00\x00WAVEfmt vertex-eu-tts")
+
+	fakeVertexEU := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if websocket.IsWebSocketUpgrade(r) {
+			c, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Errorf("fakeVertexEU upgrade: %v", err)
+				return
+			}
+			_, setupBytes, err := c.ReadMessage()
+			if err != nil {
+				c.Close()
+				return
+			}
+			sess := &capturedSession{
+				isJudge:  strings.Contains(string(setupBytes), declareLossFuncName),
+				setupRaw: string(setupBytes),
+				conn:     c,
+			}
+			_ = c.WriteMessage(websocket.TextMessage, []byte(`{"setupComplete":{}}`))
+			mu.Lock()
+			vertexWSPaths = append(vertexWSPaths, r.URL.Path)
+			vertexSessions = append(vertexSessions, sess)
+			if len(vertexSessions) == 2 {
+				close(bothVertexUp)
+			}
+			mu.Unlock()
+			for {
+				if _, _, err := c.ReadMessage(); err != nil {
+					return
+				}
+			}
+		}
+
+		// Vertex AI GenerateContent (Judge TTS)
+		mu.Lock()
+		vertexTTSPaths = append(vertexTTSPaths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"candidates": []any{
+				map[string]any{
+					"content": map[string]any{
+						"parts": []any{
+							map[string]any{
+								"inlineData": map[string]any{
+									"mimeType": "audio/wav",
+									"data":     base64.StdEncoding.EncodeToString(fakeExactWAV),
+								},
+							},
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer fakeVertexEU.Close()
+
+	fakeGeminiAPI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if websocket.IsWebSocketUpgrade(r) {
+			mu.Lock()
+			geminiLiveHits++
+			mu.Unlock()
+			http.Error(w, "Live must route to Vertex EU, not Gemini API", http.StatusInternalServerError)
+			return
+		}
+		if strings.Contains(r.URL.Path, ":generateContent") {
+			mu.Lock()
+			geminiTTSHits++
+			mu.Unlock()
+			http.Error(w, "TTS must route to Vertex EU, not Gemini API", http.StatusInternalServerError)
+			return
+		}
+		var reqBody map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&reqBody)
+		model, _ := reqBody["model"].(string)
+		questions, _ := reqBody["questions"].(map[string]any)
+		mu.Lock()
+		geminiDecPaths = append(geminiDecPaths, r.URL.Path)
+		geminiDecModels = append(geminiDecModels, model)
+		mu.Unlock()
+
+		answers := map[string]any{}
+		if _, ok := questions["same_root"]; ok {
+			answers["same_root"] = map[string]any{"type": "noul", "noul": 0.98, "confidence": 0.99}
+		}
+		if _, ok := questions["same_pronunciation"]; ok {
+			answers["same_pronunciation"] = map[string]any{"type": "noul", "noul": 0.96, "confidence": 0.99}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":      "dec-dual-1",
+			"model":   decisionModelName,
+			"status":  "completed",
+			"answers": answers,
+		})
+	}))
+	defer fakeGeminiAPI.Close()
+
+	geminiClient, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+		APIKey:  "test-gemini-key",
+		Backend: genai.BackendGeminiAPI,
+		HTTPOptions: genai.HTTPOptions{
+			BaseURL:    fakeGeminiAPI.URL + "/",
+			APIVersion: "v1beta",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClient gemini: %v", err)
+	}
+	wsToHTTPClient := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			cloned := req.Clone(req.Context())
+			if cloned.URL.Scheme == "ws" {
+				cloned.URL.Scheme = "http"
+			}
+			return http.DefaultTransport.RoundTrip(cloned)
+		}),
+	}
+	vertexClient, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+		Backend:    genai.BackendVertexAI,
+		Project:    "test-eu-proj",
+		Location:   "eu",
+		HTTPClient: wsToHTTPClient,
+		HTTPOptions: genai.HTTPOptions{
+			BaseURL:    "ws://" + strings.TrimPrefix(fakeVertexEU.URL, "http://") + "/",
+			APIVersion: "v1beta1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewClient vertex: %v", err)
+	}
+
+	gameServer := NewServer(geminiClient)
+	gameServer.LiveClient = vertexClient
+	gameServer.RecordingsDir = t.TempDir()
+
+	handlerDone := make(chan struct{})
+	appServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(handlerDone)
+		gameServer.liveGame(w, r)
+	}))
+	defer appServer.Close()
+
+	browserURL := "ws://" + strings.TrimPrefix(appServer.URL, "http://") +
+		"/live/fr?target=Oc%C3%A9an&forbidden=Oc%C3%A9an&forbidden=Poisson"
+	browserConn, _, err := websocket.DefaultDialer.Dial(browserURL, nil)
+	if err != nil {
+		t.Fatalf("dial liveGame: %v", err)
+	}
+	defer func() {
+		_ = browserConn.Close()
+		select {
+		case <-handlerDone:
+		case <-time.After(3 * time.Second):
+		}
+	}()
+
+	select {
+	case <-bothVertexUp:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for both Vertex EU Live sessions")
+	}
+
+	mu.Lock()
+	var judgeSess, guesserSess *capturedSession
+	for _, s := range vertexSessions {
+		if s.isJudge {
+			judgeSess = s
+		} else {
+			guesserSess = s
+		}
+	}
+	mu.Unlock()
+	defer judgeSess.conn.Close()
+	defer guesserSess.conn.Close()
+
+	_ = browserConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := browserConn.ReadMessage(); err != nil {
+		t.Fatalf("read setupComplete: %v", err)
+	}
+
+	toolCall := `{"toolCall":{"functionCalls":[{"id":"c-eu","name":"declare_loss","args":{"forbidden_word":"Poisson","spoken_word":"poissons","reason":"resembling"}}]}}`
+	if err := judgeSess.conn.WriteMessage(websocket.TextMessage, []byte(toolCall)); err != nil {
+		t.Fatalf("write toolCall: %v", err)
+	}
+
+	jv := readJudgeLossVerdict(t, browserConn, 3*time.Second)
+	if jv == nil || !jv.Lost || jv.Reason != "exact" {
+		t.Fatalf("unexpected verdict: %+v", jv)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(jv.Audio)
+	if err != nil || !bytes.Equal(decoded, fakeExactWAV) {
+		t.Fatalf("unexpected Vertex TTS audio: %q (err=%v)", decoded, err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if geminiLiveHits != 0 || geminiTTSHits != 0 {
+		t.Errorf("Gemini API unexpectedly received Live=%d TTS=%d hits (should be 0)", geminiLiveHits, geminiTTSHits)
+	}
+	if len(vertexWSPaths) != 2 {
+		t.Errorf("Vertex WS hits = %d, want 2", len(vertexWSPaths))
+	}
+	for _, p := range vertexWSPaths {
+		if !strings.Contains(p, "google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent") {
+			t.Errorf("unexpected Vertex WS path: %q", p)
+		}
+	}
+	wantModelPath := "projects/test-eu-proj/locations/eu/publishers/google/models/" + DefaultLiveModel
+	if !strings.Contains(judgeSess.setupRaw, wantModelPath) || !strings.Contains(guesserSess.setupRaw, wantModelPath) {
+		t.Errorf("expected Vertex EU model path %q in setup payloads:\nguesser=%s\njudge=%s",
+			wantModelPath, guesserSess.setupRaw, judgeSess.setupRaw)
+	}
+	if len(vertexTTSPaths) == 0 {
+		t.Errorf("expected Judge TTS calls on Vertex EU, got 0")
+	}
+	for _, p := range vertexTTSPaths {
+		if !strings.Contains(p, "/projects/test-eu-proj/locations/eu/publishers/google/models/"+DefaultTTSModel+":generateContent") {
+			t.Errorf("unexpected Vertex TTS path: %q", p)
+		}
+	}
+	if len(geminiDecPaths) != 2 {
+		t.Errorf("expected 2 Decision 1 calls on Gemini API (same_root + same_pronunciation), got %d (%v)", len(geminiDecPaths), geminiDecPaths)
 	}
 }
 
@@ -1249,9 +1568,9 @@ func TestEmbeddedAssetsServing(t *testing.T) {
 func TestStructuredSlogOutput(t *testing.T) {
 	var buf bytes.Buffer
 	logger := NewLogger(&buf)
-	logger.Info("starting game", "game_id", "ab12", "lang", "fr", "target", "Guitare")
+	logger.Info("starting game", "game_id", "ab12", "lang", "fr", "target", "Guitare", "forbidden_words", []string{"Cordes", "Musique"})
 	logger.Warn("guesser model disconnected", "game_id", "ab12")
-	logger.Error("decision 1 check failed", "game_id", "ab12", "spoken", "porte", "forbidden", "Porter")
+	logger.Error("decision 1 check failed", "game_id", "ab12", "spoken", "porte", "forbidden_word", "Porter")
 
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 	if len(lines) != 3 {
@@ -1357,19 +1676,25 @@ func TestJudgeVAD(t *testing.T) {
 		}
 	})
 
-	t.Run("continuous_speech_splits_at_hard_max_and_replays_overlap", func(t *testing.T) {
+	t.Run("continuous_speech_splits_at_hard_max_and_replays_overlap_live", func(t *testing.T) {
 		var sent []genai.LiveRealtimeInput
 		v := newJudgeVAD(func(in genai.LiveRealtimeInput) error {
 			sent = append(sent, in)
 			return nil
 		})
 
-		// 66 nonstop loud chunks (~4.22 s) without any pause.
+		// 66 nonstop loud chunks (~4.22 s) without any pause -> hard split at 4s,
+		// and the very next real-time speech chunk opens a fresh ActivityStart with overlap
+		// (never stalling or burst-flushing pending audio).
 		for i := 0; i < 66; i++ {
 			_ = v.FeedAudio(speechChunk, mime)
 		}
+		startCount := 0
 		endCount := 0
 		for _, m := range sent {
+			if m.ActivityStart != nil {
+				startCount++
+			}
 			if m.ActivityEnd != nil {
 				endCount++
 			}
@@ -1377,15 +1702,8 @@ func TestJudgeVAD(t *testing.T) {
 		if endCount != 1 {
 			t.Fatalf("expected 1 ActivityEnd during 4.22s continuous speech, got %d", endCount)
 		}
-
-		// While waiting for TurnComplete, chunks are buffered; OnTurnComplete flushes them
-		// with overlap into a fresh ActivityStart turn.
-		before := len(sent)
-		if err := v.OnTurnComplete(); err != nil {
-			t.Fatalf("OnTurnComplete: %v", err)
-		}
-		if len(sent) <= before || sent[before].ActivityStart == nil {
-			t.Fatalf("expected ActivityStart on TurnComplete flush, got %+v", sent[before:])
+		if startCount != 2 {
+			t.Fatalf("expected 2 ActivityStart signals (immediate real-time continuation after hard split), got %d", startCount)
 		}
 	})
 
@@ -1396,14 +1714,12 @@ func TestJudgeVAD(t *testing.T) {
 			return nil
 		})
 
-		// Trigger a soft split (retains overlap).
-		for i := 0; i < 40; i++ {
+		// Trigger a hard split (retains overlap).
+		for i := 0; i < 63; i++ {
 			_ = v.FeedAudio(speechChunk, mime)
 		}
-		_ = v.FeedAudio(silentChunk, mime)
-		_ = v.FeedAudio(silentChunk, mime)
-		if err := v.OnTurnComplete(); err != nil {
-			t.Fatalf("OnTurnComplete: %v", err)
+		if sent[len(sent)-1].ActivityEnd == nil {
+			t.Fatalf("expected ActivityEnd at hard max")
 		}
 
 		// Prolonged silence (>= 550 ms) after the split should discard stale overlap.
@@ -1412,37 +1728,10 @@ func TestJudgeVAD(t *testing.T) {
 		}
 		before := len(sent)
 		_ = v.FeedAudio(speechChunk, mime)
-		// Should emit ActivityStart + preRoll (3 chunks), NOT overlap (6) + onset (1).
+		// Should emit ActivityStart + preRoll (3 chunks), NOT overlap (3) + onset (1).
 		gotTurnPrefix := len(sent) - before
 		if gotTurnPrefix != 1+judgePreRollChunks {
 			t.Fatalf("expected ActivityStart + %d preRoll chunks after prolonged silence, got %d messages", judgePreRollChunks, gotTurnPrefix)
-		}
-	})
-
-	t.Run("turn_timeout_unblocks_waiting_state", func(t *testing.T) {
-		now := time.Unix(1000, 0)
-		var sent []genai.LiveRealtimeInput
-		v := newJudgeVAD(func(in genai.LiveRealtimeInput) error {
-			sent = append(sent, in)
-			return nil
-		})
-		v.now = func() time.Time { return now }
-
-		for i := 0; i < 10; i++ {
-			_ = v.FeedAudio(speechChunk, mime)
-		}
-		for i := 0; i < 9; i++ {
-			_ = v.FeedAudio(silentChunk, mime)
-		}
-		// Buffer speech while waiting for TurnComplete.
-		_ = v.FeedAudio(speechChunk, mime)
-		countWhileWaiting := len(sent)
-
-		// Advance past timeout without receiving TurnComplete -> next FeedAudio must unblock and start a new turn.
-		now = now.Add(judgeTurnResponseTimeout + time.Millisecond)
-		_ = v.FeedAudio(speechChunk, mime)
-		if len(sent) <= countWhileWaiting || sent[countWhileWaiting].ActivityStart == nil {
-			t.Fatalf("expected timeout to unblock and emit ActivityStart, got %+v", sent[countWhileWaiting:])
 		}
 	})
 }
@@ -1705,11 +1994,7 @@ func TestJudgeLossConcurrentDecisionAndTTS(t *testing.T) {
 			t.Fatalf("write toolCall: %v", err)
 		}
 
-		_ = browserConn.SetReadDeadline(time.Now().Add(3 * time.Second))
-		_, gotBytes, err := browserConn.ReadMessage()
-		if err != nil {
-			t.Fatalf("read judge verdict: %v", err)
-		}
+		jv := readJudgeLossVerdict(t, browserConn, 3*time.Second)
 
 		select {
 		case <-exactTTSCanceled:
@@ -1717,23 +2002,19 @@ func TestJudgeLossConcurrentDecisionAndTTS(t *testing.T) {
 			t.Fatal("expected unused exact TTS call B2 to be cancelled")
 		}
 
-		var jm judgeMessage
-		if err := json.Unmarshal(gotBytes, &jm); err != nil {
-			t.Fatalf("unmarshal verdict: %v", err)
+		if jv == nil || !jv.Lost {
+			t.Fatalf("expected loss verdict, got %+v", jv)
 		}
-		if jm.Judge == nil || !jm.Judge.Lost {
-			t.Fatalf("expected loss verdict, got %+v", jm.Judge)
+		if jv.Reason != "resembling" {
+			t.Errorf("Judge.Reason = %q, want resembling", jv.Reason)
 		}
-		if jm.Judge.Reason != "resembling" {
-			t.Errorf("Judge.Reason = %q, want resembling", jm.Judge.Reason)
+		if jv.Message != wantResemblingMsg {
+			t.Errorf("Judge.Message = %q, want %q", jv.Message, wantResemblingMsg)
 		}
-		if jm.Judge.Message != wantResemblingMsg {
-			t.Errorf("Judge.Message = %q, want %q", jm.Judge.Message, wantResemblingMsg)
+		if jv.AudioMimeType != "audio/wav" {
+			t.Errorf("Judge.AudioMimeType = %q, want audio/wav", jv.AudioMimeType)
 		}
-		if jm.Judge.AudioMimeType != "audio/wav" {
-			t.Errorf("Judge.AudioMimeType = %q, want audio/wav", jm.Judge.AudioMimeType)
-		}
-		decoded, err := base64.StdEncoding.DecodeString(jm.Judge.Audio)
+		decoded, err := base64.StdEncoding.DecodeString(jv.Audio)
 		if err != nil {
 			t.Fatalf("decode base64 Judge.Audio: %v", err)
 		}
@@ -1889,11 +2170,7 @@ func TestJudgeLossConcurrentDecisionAndTTS(t *testing.T) {
 			t.Fatalf("write toolCall: %v", err)
 		}
 
-		_ = browserConn.SetReadDeadline(time.Now().Add(3 * time.Second))
-		_, gotBytes, err := browserConn.ReadMessage()
-		if err != nil {
-			t.Fatalf("read judge verdict: %v", err)
-		}
+		jv := readJudgeLossVerdict(t, browserConn, 3*time.Second)
 
 		select {
 		case <-resemblingTTSCanceled:
@@ -1901,20 +2178,16 @@ func TestJudgeLossConcurrentDecisionAndTTS(t *testing.T) {
 			t.Fatal("expected unused resembling TTS call B1 to be cancelled")
 		}
 
-		var jm judgeMessage
-		if err := json.Unmarshal(gotBytes, &jm); err != nil {
-			t.Fatalf("unmarshal verdict: %v", err)
+		if jv == nil || !jv.Lost {
+			t.Fatalf("expected loss verdict, got %+v", jv)
 		}
-		if jm.Judge == nil || !jm.Judge.Lost {
-			t.Fatalf("expected loss verdict, got %+v", jm.Judge)
+		if jv.Reason != "exact" {
+			t.Errorf("Judge.Reason = %q, want exact", jv.Reason)
 		}
-		if jm.Judge.Reason != "exact" {
-			t.Errorf("Judge.Reason = %q, want exact", jm.Judge.Reason)
+		if jv.Message != wantExactMsg {
+			t.Errorf("Judge.Message = %q, want %q", jv.Message, wantExactMsg)
 		}
-		if jm.Judge.Message != wantExactMsg {
-			t.Errorf("Judge.Message = %q, want %q", jm.Judge.Message, wantExactMsg)
-		}
-		decoded, err := base64.StdEncoding.DecodeString(jm.Judge.Audio)
+		decoded, err := base64.StdEncoding.DecodeString(jv.Audio)
 		if err != nil {
 			t.Fatalf("decode base64 Judge.Audio: %v", err)
 		}

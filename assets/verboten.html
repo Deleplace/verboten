@@ -232,6 +232,17 @@
                 }
                 ws.onmessage = function (evt) {
                     data = JSON.parse(evt.data);
+                    if (data.judge && data.judge.pending) {
+                        // A loss is already confirmed server-side while Judge TTS finishes synthesizing:
+                        // cancel any pending win window and halt mic/Guesser playback immediately.
+                        if (winTimeout) {
+                            clearTimeout(winTimeout);
+                            winTimeout = null;
+                        }
+                        recordStop();
+                        stopPlayback();
+                        return;
+                    }
                     if (data.judge && data.judge.lost) {
                         console.log('Judge declared loss:', data.judge);
                         const lossMessage = data.judge.message || formatJudgeLossMessage(data.judge.spokenWord, data.judge.forbiddenWord, data.judge.reason);

@@ -30,6 +30,14 @@ func TestReplayGames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create genai client: %v", err)
 	}
+	liveClient, vertexInfo, err := NewVertexLiveClient(ctx)
+	if err != nil {
+		t.Fatalf("create vertex ai live client: %v", err)
+	}
+	if liveClient != nil {
+		t.Logf("using Vertex AI Live/TTS client: project=%s location=%s endpoint=%s",
+			vertexInfo.Project, vertexInfo.Location, vertexInfo.LiveWebSocketURL)
+	}
 
 	for _, outcome := range []string{"won", "lost"} {
 		expectWin := outcome == "won"
@@ -51,14 +59,14 @@ func TestReplayGames(t *testing.T) {
 			for _, name := range dirs {
 				gameDir := filepath.Join(baseDir, name)
 				t.Run(name, func(t *testing.T) {
-					replayGame(t, client, gameDir, expectWin)
+					replayGame(t, client, liveClient, gameDir, expectWin)
 				})
 			}
 		})
 	}
 }
 
-func replayGame(t *testing.T, client *genai.Client, gameDir string, expectWin bool) {
+func replayGame(t *testing.T, client, liveClient *genai.Client, gameDir string, expectWin bool) {
 	rec, err := loadGameRecording(filepath.Join(gameDir, "game.json"))
 	if err != nil {
 		t.Fatalf("load game.json: %v", err)
@@ -97,6 +105,7 @@ func replayGame(t *testing.T, client *genai.Client, gameDir string, expectWin bo
 	}
 
 	gameServer := NewServer(client)
+	gameServer.LiveClient = liveClient
 	gameServer.Verbose = testing.Verbose()
 	gameServer.RecordingsDir = t.TempDir()
 
@@ -191,13 +200,23 @@ func replayGame(t *testing.T, client *genai.Client, gameDir string, expectWin bo
 				}
 
 				var jm judgeMessage
-				if err := json.Unmarshal(msg.data, &jm); err == nil && jm.Judge != nil && jm.Judge.Lost {
-					resultCh <- replayResult{
-						judgeVerdict:  jm.Judge,
-						guesserSpeech: strings.TrimSpace(guesserSpeech.String()),
-						humanSpeech:   strings.TrimSpace(humanSpeech.String()),
+				if err := json.Unmarshal(msg.data, &jm); err == nil && jm.Judge != nil {
+					if jm.Judge.Pending {
+						if winTimer != nil {
+							winTimer.Stop()
+							winTimer = nil
+							winCh = nil
+						}
+						continue
 					}
-					return
+					if jm.Judge.Lost {
+						resultCh <- replayResult{
+							judgeVerdict:  jm.Judge,
+							guesserSpeech: strings.TrimSpace(guesserSpeech.String()),
+							humanSpeech:   strings.TrimSpace(humanSpeech.String()),
+						}
+						return
+					}
 				}
 
 				var sm genai.LiveServerMessage

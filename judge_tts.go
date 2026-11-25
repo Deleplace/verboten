@@ -137,11 +137,12 @@ func (vg *VerbotenGameServer) synthesizeJudgeSpeech(ctx context.Context, lang, t
 	}
 	vg.ttsCacheMu.RUnlock()
 
-	if vg.genaiClient == nil || vg.genaiClient.Models == nil {
+	client := vg.liveAndTTSClient()
+	if client == nil || client.Models == nil {
 		return nil, "", fmt.Errorf("genai models client is not initialized")
 	}
 
-	resp, err := vg.genaiClient.Models.GenerateContent(ctx, vg.ttsModel(), genai.Text(trimmed), &genai.GenerateContentConfig{
+	resp, err := client.Models.GenerateContent(ctx, vg.ttsModel(), genai.Text(trimmed), &genai.GenerateContentConfig{
 		ResponseModalities: []string{"AUDIO"},
 		SpeechConfig: &genai.SpeechConfig{
 			LanguageCode: languageCodeForLang(lang),

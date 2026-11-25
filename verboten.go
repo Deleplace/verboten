@@ -28,7 +28,10 @@ import (
 	"google.golang.org/genai"
 )
 
-const DefaultLiveModel = "gemini-3.1-flash-live-preview"
+const (
+	DefaultLiveModel      = "gemini-3.8-live"
+	DefaultVertexLocation = "eu"
+)
 
 // NewLogger returns a structured JSON slog.Logger whose top-level keys match
 // Google Cloud Logging conventions ("severity", "message", "time").
@@ -67,7 +70,8 @@ func NewLogger(w io.Writer) *slog.Logger {
 }
 
 type VerbotenGameServer struct {
-	genaiClient               *genai.Client
+	genaiClient               *genai.Client // Gemini Developer API client (Decisions API; fallback for Live & TTS)
+	LiveClient                *genai.Client // Optional Vertex AI client (e.g. EU multi-region) for Live API & Judge TTS
 	Logger                    *slog.Logger
 	Verbose                   bool
 	LiveModel                 string
@@ -80,6 +84,16 @@ type VerbotenGameServer struct {
 
 	ttsCacheMu sync.RWMutex
 	ttsCache   map[string]cachedTTSAudio
+}
+
+func (vg *VerbotenGameServer) liveAndTTSClient() *genai.Client {
+	if vg != nil && vg.LiveClient != nil {
+		return vg.LiveClient
+	}
+	if vg != nil {
+		return vg.genaiClient
+	}
+	return nil
 }
 
 func (vg *VerbotenGameServer) logger() *slog.Logger {
@@ -133,10 +147,10 @@ func DefaultRecordingsDirForEnv() string {
 	return DefaultRecordingsDir
 }
 
-// NewGenAIClient creates a genai.Client configured for Verboten's Live and Decisions APIs.
-// Both gemini-3.1-flash-live-preview (BidiGenerateContent) and gemini-decision-1 (/decisions)
-// require the Gemini Developer API (BackendGeminiAPI) on API version "v1beta"
-// (authenticated via GEMINI_API_KEY or GOOGLE_API_KEY).
+// NewGenAIClient creates a genai.Client configured for the Gemini Developer API (v1beta),
+// authenticated via GEMINI_API_KEY or GOOGLE_API_KEY.
+// This client is required for gemini-decision-1 (/v1beta/decisions) and also serves as a
+// fallback for Live and TTS when Vertex AI (GOOGLE_CLOUD_PROJECT) is not configured.
 func NewGenAIClient(ctx context.Context) (*genai.Client, error) {
 	apiVersion := "v1beta"
 	if v := strings.TrimSpace(os.Getenv("GOOGLE_GENAI_API_VERSION")); v != "" {
@@ -149,6 +163,78 @@ func NewGenAIClient(ctx context.Context) (*genai.Client, error) {
 		},
 	}
 	return genai.NewClient(ctx, cfg)
+}
+
+// VertexClientInfo describes the resolved Vertex AI project, location, and endpoints
+// used for Live API and Judge TTS requests.
+type VertexClientInfo struct {
+	Project          string
+	Location         string
+	BaseURL          string
+	LiveWebSocketURL string
+}
+
+// VertexLiveConfigForEnv returns the GCP project and Vertex AI location configured via
+// environment variables. Location checks VERBOTEN_VERTEX_LOCATION, then GOOGLE_CLOUD_LOCATION,
+// and defaults to DefaultVertexLocation ("eu" -> aiplatform.eu.rep.googleapis.com).
+func VertexLiveConfigForEnv() (project, location string) {
+	project = strings.TrimSpace(os.Getenv("GOOGLE_CLOUD_PROJECT"))
+	location = strings.TrimSpace(os.Getenv("VERBOTEN_VERTEX_LOCATION"))
+	if location == "" {
+		location = strings.TrimSpace(os.Getenv("GOOGLE_CLOUD_LOCATION"))
+	}
+	if location == "" {
+		location = DefaultVertexLocation
+	}
+	return project, location
+}
+
+func vertexLiveWebSocketURL(baseURL, apiVersion string) string {
+	if apiVersion == "" {
+		apiVersion = "v1beta1"
+	}
+	wsBase := strings.TrimRight(baseURL, "/")
+	switch {
+	case strings.HasPrefix(wsBase, "https://"):
+		wsBase = "wss://" + strings.TrimPrefix(wsBase, "https://")
+	case strings.HasPrefix(wsBase, "http://"):
+		wsBase = "ws://" + strings.TrimPrefix(wsBase, "http://")
+	}
+	return fmt.Sprintf("%s/ws/google.cloud.aiplatform.%s.LlmBidiService/BidiGenerateContent", wsBase, apiVersion)
+}
+
+// NewVertexLiveClient creates a Vertex AI genai.Client pinned to an EU (or configured) location
+// using ADC / Cloud Run Service Account credentials. Leaving APIKey empty ensures the SDK
+// ignores GOOGLE_API_KEY from the environment and dials the regional/multi-regional Vertex AI
+// endpoint (e.g. https://aiplatform.eu.rep.googleapis.com/) instead of the global Express endpoint.
+// If GOOGLE_CLOUD_PROJECT is unset, it returns (nil, VertexClientInfo{}, nil).
+func NewVertexLiveClient(ctx context.Context) (*genai.Client, VertexClientInfo, error) {
+	project, location := VertexLiveConfigForEnv()
+	if project == "" {
+		return nil, VertexClientInfo{}, nil
+	}
+	return newVertexLiveClient(ctx, project, location, nil)
+}
+
+func newVertexLiveClient(ctx context.Context, project, location string, httpClient *http.Client) (*genai.Client, VertexClientInfo, error) {
+	cfg := &genai.ClientConfig{
+		Backend:    genai.BackendVertexAI,
+		Project:    project,
+		Location:   location,
+		HTTPClient: httpClient,
+	}
+	client, err := genai.NewClient(ctx, cfg)
+	if err != nil {
+		return nil, VertexClientInfo{}, err
+	}
+	resolved := client.ClientConfig()
+	info := VertexClientInfo{
+		Project:          resolved.Project,
+		Location:         resolved.Location,
+		BaseURL:          resolved.HTTPOptions.BaseURL,
+		LiveWebSocketURL: vertexLiveWebSocketURL(resolved.HTTPOptions.BaseURL, resolved.HTTPOptions.APIVersion),
+	}
+	return client, info, nil
 }
 
 const guesserPrompt = `
@@ -242,6 +328,7 @@ type clientControlMessage struct {
 }
 
 type judgeVerdict struct {
+	Pending       bool   `json:"pending,omitempty"`
 	Lost          bool   `json:"lost"`
 	ForbiddenWord string `json:"forbiddenWord,omitempty"`
 	SpokenWord    string `json:"spokenWord,omitempty"`
@@ -269,7 +356,7 @@ Full list of forbidden words: %s
 STRICT LOSS CONDITIONS — You MUST immediately interrupt the game and call %s if the human player pronounces ANY of the following:
 1. EXACT FORBIDDEN WORD (reason="exact"): The target word (%s) OR any of the other forbidden words (%s).
 2. TOO CLOSE / SAME-ROOT WORD (reason="resembling"): Two words are considered "too close" ONLY when they share the SAME ROOT/STEM as the target word (%s) OR any of the other forbidden words (%s) — i.e., an inflection, plural, feminine, verb conjugation, derivative, or compound from the same lexical root (e.g., "poussent" for "Pousser", "porte" for "Porter", "joue" for "Jouer", "cheesy" for "Cheese", "arbres" for "Arbre"). NEVER treat two words as "too close" merely because they are synonyms or semantically related!
-3. EXACT TRANSLATION OF THE TARGET WORD IN ANOTHER LANGUAGE (reason="translation"): Any word that is the exact translation of the TARGET WORD (%s) in ANY other language — whether intentional or accidental, whether spoken alone or inside a %s sentence, and including plurals or inflections of that translation!
+3. EXACT TRANSLATION OF THE TARGET WORD IN ANOTHER LANGUAGE (reason="translation"): Any word that is the exact translation of the TARGET WORD (%s) in ANY other language — whether intentional or accidental, whether spoken alone or inside a %s sentence (even if pronounced with a %s accent), and including plurals or inflections of that translation!
    Examples of FORBIDDEN exact translations of a target word (MUST immediately call %s with reason="translation"):
    - Target "Citron" -> player says "lemon", "lemons", "limón", "Zitrone", "limone" -> LOST!
    - Target "Chapeau" -> player says "hat", "hats", "sombrero", "Hut", "cappello" -> LOST!
@@ -304,6 +391,7 @@ RESPONSE BEHAVIOR:
 		targetWord,
 		strings.Join(otherForbiddenWords, ", "),
 		targetWord,
+		langName,
 		langName,
 		declareLossFuncName,
 		targetWord,
@@ -370,11 +458,25 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 	if model == "" {
 		model = DefaultLiveModel
 	}
+	liveClient := vg.liveAndTTSClient()
+	liveBackend := "gemini_api"
+	liveLocation := "global"
+	if liveClient != nil {
+		cc := liveClient.ClientConfig()
+		if cc.Backend == genai.BackendVertexAI {
+			liveBackend = "vertex_ai"
+			if cc.Location != "" {
+				liveLocation = cc.Location
+			}
+		}
+	}
 	gameLog.Info("starting game",
 		"lang", lang,
 		"target", targetWord,
-		"forbidden", otherForbiddenWords,
+		"forbidden_words", otherForbiddenWords,
 		"model", model,
+		"live_backend", liveBackend,
+		"live_location", liveLocation,
 	)
 
 	var recorder *gameRecorder
@@ -490,7 +592,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 	connectGroup, connectCtx := errgroup.WithContext(ctx)
 	connectGroup.Go(func() error {
 		var err error
-		session, err = vg.genaiClient.Live.Connect(connectCtx, model, config)
+		session, err = liveClient.Live.Connect(connectCtx, model, config)
 		if err != nil {
 			return fmt.Errorf("connect guesser model: %w", err)
 		}
@@ -498,7 +600,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 	})
 	connectGroup.Go(func() error {
 		var err error
-		sessionJudge, err = vg.genaiClient.Live.Connect(connectCtx, model, configJudge)
+		sessionJudge, err = liveClient.Live.Connect(connectCtx, model, configJudge)
 		if err != nil {
 			return fmt.Errorf("connect judge model: %w", err)
 		}
@@ -598,13 +700,6 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 				}
 				return
 			}
-			if message.ServerContent != nil && message.ServerContent.TurnComplete {
-				if !gameOver.Load() {
-					if err := jVAD.OnTurnComplete(); err != nil && !gameOver.Load() {
-						gameLog.Warn("flush buffered audio to judge failed", "err", err)
-					}
-				}
-			}
 			if message.ToolCall != nil {
 				for _, fc := range message.ToolCall.FunctionCalls {
 					if fc.Name == declareLossFuncName {
@@ -635,7 +730,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 						if reason == "translation" && targetWord != "" && normalizeWord(forbiddenWord) != normalizeWord(targetWord) {
 							if vg.Verbose {
 								gameLog.Info("ignoring judge translation call for non-target word",
-									"forbidden", forbiddenWord,
+									"forbidden_word", forbiddenWord,
 									"target", targetWord,
 								)
 							}
@@ -661,6 +756,14 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 						)
 						if isExactMatch {
 							reason = "exact"
+						}
+
+						// Notify the browser immediately once a loss is confirmed (before awaiting TTS)
+						// so it cancels any pending win timeout and stops the Guesser right away.
+						sendJudgePending := func() {
+							if pendingBytes, err := json.Marshal(judgeMessage{Judge: &judgeVerdict{Pending: true}}); err == nil {
+								_ = writeToBrowser(pendingBytes)
+							}
 						}
 
 						if needsDecision {
@@ -718,7 +821,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 							if decRes.err != nil {
 								gameLog.Error("decision 1 check failed",
 									"spoken", spokenWord,
-									"forbidden", forbiddenWord,
+									"forbidden_word", forbiddenWord,
 									"err", decRes.err,
 								)
 							} else {
@@ -728,7 +831,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 								gameLog.Info(
 									fmt.Sprintf("Proximité entre '%s' et '%s': %d%%.", spokenWord, forbiddenWord, proximityPct),
 									"spoken", spokenWord,
-									"forbidden", forbiddenWord,
+									"forbidden_word", forbiddenWord,
 									"proximity_pct", proximityPct,
 									"probability", prob,
 								)
@@ -751,13 +854,14 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 								exactTTSCancel()
 								return
 							}
+							sendJudgePending()
 
 							samePronunciation := false
 							pronRes := <-pronCh
 							if pronRes.err != nil {
 								gameLog.Warn("decision 1 pronunciation check failed",
 									"spoken", spokenWord,
-									"forbidden", forbiddenWord,
+									"forbidden_word", forbiddenWord,
 									"err", pronRes.err,
 								)
 							} else {
@@ -765,7 +869,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 								gameLog.Info(
 									fmt.Sprintf("Prononciation identique entre '%s' et '%s': %d%%.", spokenWord, forbiddenWord, pronPct),
 									"spoken", spokenWord,
-									"forbidden", forbiddenWord,
+									"forbidden_word", forbiddenWord,
 									"same_pronunciation_pct", pronPct,
 									"probability", pronRes.prob,
 								)
@@ -793,6 +897,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 							if !gameOver.CompareAndSwap(false, true) {
 								return
 							}
+							sendJudgePending()
 							lossMessage = formatJudgeLossText(lang, spokenWord, forbiddenWord, reason)
 							ttsCtx, ttsCancel := context.WithTimeout(ctx, judgeTTSTimeout)
 							audio, mimeType, err := vg.synthesizeJudgeSpeech(ttsCtx, lang, lossMessage)
@@ -810,7 +915,7 @@ func (vg *VerbotenGameServer) liveGame(w http.ResponseWriter, r *http.Request) {
 						gameLog.Info("judge declared loss",
 							"reason", reason,
 							"spoken", spokenWord,
-							"forbidden", forbiddenWord,
+							"forbidden_word", forbiddenWord,
 							"tts_bytes", len(ttsAudio),
 						)
 						verdict := &judgeVerdict{
